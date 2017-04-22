@@ -1,0 +1,19 @@
+Blender information
+
+Resolution: width = 1280
+	    height = 1920
+
+h_res = 96dpi
+v_res = 96dpi
+
+Sensor: 32 mm
+Focal Length = 22 mm
+
+aspect ratio: 1 1
+
+Focal in px = 22 * 1920/32 = 1320 
+
+Center of Proj x = width/2 = 640 
+Center of Proj y = height/2 = 960
+
+K = [ 1320 0 640; 0 1320 960;0 0 1];
