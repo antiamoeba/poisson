@@ -2,7 +2,7 @@
 from __future__ import division
 import numpy as np
 import matplotlib.pyplot as plt
-import sys, os, glob
+import sys, os, time, glob
 from scipy import misc
 from scipy.interpolate import RegularGridInterpolator as RGI
 
@@ -92,23 +92,7 @@ class Panorama:
         return result
 
 
-    # focal_length in pixels
-    def runAlgorithm(self, folder_name, focal_length, mapping):
-        img_names = glob.glob("data/" + folder_name + "/*")
-        for img_name in img_names:
-            image = readimage(img_name)
-            mapped = self.warpImage(image, focal_length, mapping)
-            publishImage(mapped)
-        return
-
-    def runMain(self):
-        print "\nRunning Cylindrical Panorama Algorithm:"
-        self.runAlgorithm("synthetic", 1320, self.cylindricalMappingIndices)
-        self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
-        return
-
-class Convolution:
-    def convolve(self, source, dest, drift_max, shift_min = 0, shift_max = None):
+    def convolve(self, source, dest, drift_max=20, shift_min = 0, shift_max = None):
         if shift_max == None:
             shift_max = source.shape[1] - 1
         min_conv = np.inf
@@ -146,6 +130,34 @@ class Convolution:
         total_img[start_right_h:start_right_h + dest.shape[0],min_shift:] = dest
         total_img = total_img.astype(np.uint8)
         return min_h, min_shift, total_img
+
+
+    # focal_length in pixels
+    def runAlgorithm(self, folder_name, focal_length, mapping):
+        img_names = glob.glob("data/" + folder_name + "/*")[:2]  # TODO: Remove slicing after finished testing
+        panorama = []
+        image = readimage(img_names[0])
+        mapped = self.warpImage(image, focal_length, mapping)
+        panorama = mapped
+        for img_name in img_names[1:]:
+            image = readimage(img_name)
+            mapped = self.warpImage(image, focal_length, mapping)
+            print "Convolving now: "+time.ctime()  # TODO: Remove after tested
+            panorama = self.convolve(panorama, mapped)[2]
+            print "Done convolving: "+time.ctime()  # TODO: Remove after tested
+        publishImage(panorama)
+        return panorama
+
+
+    def runMain(self):
+        print "\nRunning Cylindrical Panorama Algorithm:"
+        self.runAlgorithm("synthetic", 1320, self.cylindricalMappingIndices)
+
+        # print "\nRunning Spherical Panorama Algorithm:"
+        # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
+        return
+
+
         
 
 # Main
@@ -155,9 +167,10 @@ if __name__ == "__main__":
         os.makedirs(output_dir)
     Panorama().runMain()
     print ""
-    source = readimage("data/o-brienleft.png")[:-10]
-    dest = readimage("data/o-brienright.png")[10:]
-    min_h, min_shift, total_img = Convolution().convolve(source, dest, 20)
-    displayImage(total_img)
+    ### Code to test convolve(): ###
+    # source = readimage("data/o-brienleft.png")[:-10]
+    # dest = readimage("data/o-brienright.png")[10:]
+    # min_h, min_shift, total_img = Panorama().convolve(source, dest, 20)
+    # displayImage(total_img)
 
 
