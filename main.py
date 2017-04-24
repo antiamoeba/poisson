@@ -90,6 +90,9 @@ class Panorama:
 
         for channel in range(image.shape[2]):
             result[:,:,channel] = interpolators[channel](indices_to_obtain).reshape(image.shape[:2])
+
+        slice_edge = int(0.08 * result.shape[1] / 2.0)
+        result = result[:,slice_edge:-slice_edge,:]
         return result
 
     def calcImagePyramid(self, img, threshold=30):
@@ -169,7 +172,7 @@ class Panorama:
 
     # focal_length in pixels
     def runAlgorithm(self, folder_name, focal_length, mapping):
-        img_names = glob.glob("data/" + folder_name + "/*")[:2]  # TODO: Remove slicing after finished testing
+        img_names = glob.glob("data/" + folder_name + "/*")
         panorama = []
         image = readimage(img_names[0])
         mapped = self.warpImage(image, focal_length, mapping)
@@ -177,11 +180,8 @@ class Panorama:
         for img_name in img_names[1:]:
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)
-            
-            print "Convolving now: "+time.ctime()  # TODO: Remove after tested
             h, shift, panorama = self.pyramid_convolve(panorama, mapped)
-            print "Done convolving: "+time.ctime()  # TODO: Remove after tested
-        publishImage(panorama)
+            publishImage(panorama)
         return panorama
 
 
