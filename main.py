@@ -60,13 +60,13 @@ class Panorama:
 
 
     def cylindricalMappingIndices(self, initial_indices, focal_length, center, scaling):
-        new_x = focal_length * np.tan((initial_indices[1] - center[1]) / scaling)
+        new_x = focal_length * np.tan((initial_indices[1] - center[1]) / scaling) * 0.92
         new_y = focal_length * ((initial_indices[0] - center[0]) / scaling) / np.cos((initial_indices[1] - center[1]) / scaling)
         return (new_y, new_x)
 
 
     def sphericalMappingIndices(self, initial_indices, focal_length, center, scaling):
-        new_x = focal_length * np.tan((initial_indices[1] - center[1]) / scaling)
+        new_x = focal_length * np.tan((initial_indices[1] - center[1]) / scaling) * 0.92
         new_y = focal_length * np.tan((initial_indices[0] - center[0]) / scaling) / np.cos((initial_indices[1] - center[1]) / scaling)
         return (new_y, new_x)
 
