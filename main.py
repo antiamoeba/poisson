@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import sys, os, time, glob
 from scipy import misc
 from scipy.interpolate import RegularGridInterpolator as RGI
+from scipy.ndimage.filters import gaussian_filter
 
 
 # Parameters and defaults
@@ -91,8 +92,39 @@ class Panorama:
             result[:,:,channel] = interpolators[channel](indices_to_obtain).reshape(image.shape[:2])
         return result
 
+    def calcImagePyramid(self, img, threshold=30):
+        imgs = []
+        current = img
+        imgs.insert(0, current)
+        while current.shape[0] > threshold and current.shape[1] > threshold:
+            current = misc.imresize(current, 0.5)
+            imgs.insert(0, current)
+        return imgs
+    def pyramid_convolve(self, source, dest, threshold=30, drift_min=-20, drift_max=20, shift_min = 0, shift_max = None):
+        #if source.shape != dest.shape:
+        #    raise ValueError('Source and destination images do not have the same dimension!')
+        sourcePyramid = self.calcImagePyramid(source, threshold)
+        destPyramid = self.calcImagePyramid(dest, threshold)
+        
+        #start
+        if shift_max == None:
+            shift_max = source.shape[1] - 1
+        start_drift_min = int(np.ceil(drift_min/(2 ** (len(destPyramid)-1))))
+        start_drift_max = int(np.ceil(drift_max/(2 ** (len(destPyramid)-1))))
+        start_shift_min = int(np.ceil(shift_min/(2 ** (len(destPyramid)-1))))
+        start_shift_max = int(np.ceil(shift_max/(2 ** (len(destPyramid)-1))))
+        curr_h, curr_shift = self.raw_convolve(sourcePyramid[0], destPyramid[0], start_drift_min, start_drift_max, start_shift_min, start_shift_max)
 
-    def convolve(self, source, dest, drift_max=20, shift_min = 0, shift_max = None):
+        counter = 1
+        while counter < len(destPyramid):
+            curr_source = sourcePyramid[counter]
+            curr_dest = destPyramid[counter]
+            if counter == len(destPyramid)-1:
+                h, shift, img = self.raw_convolve(curr_source, curr_dest, curr_h*2 - 2, curr_h*2 + 2, curr_shift*2 - 2, curr_shift*2 + 2, True)
+                return h, shift, img
+            curr_h, curr_shift = self.raw_convolve(curr_source, curr_dest, curr_h*2 - 2, curr_h*2 + 2, curr_shift*2 - 2, curr_shift*2 + 2)
+            counter += 1
+    def raw_convolve(self, source, dest, drift_min=-20, drift_max=20, shift_min = 0, shift_max = None, combine = False):
         if shift_max == None:
             shift_max = source.shape[1] - 1
         min_conv = np.inf
@@ -100,7 +132,7 @@ class Panorama:
         min_shift = np.inf
         lo = None
         ro = None
-        for drift in range(-drift_max, drift_max):
+        for drift in range(drift_min, drift_max + 1):
             for start in range(shift_min, shift_max):
                 end = start + dest.shape[1]
                 if end > source.shape[1]:
@@ -119,6 +151,10 @@ class Panorama:
                     min_h = drift
                     lo = source_overlap
                     ro = dest_overlap
+
+        if not combine:
+            return min_h, min_shift
+
         total_width = min_shift + dest.shape[1]
         total_height = abs(min_h) + source.shape[0]
         total_img = np.zeros((total_height, total_width, 3))
@@ -128,9 +164,8 @@ class Panorama:
         start_right_h = max(min_h, 0)
 
         total_img[start_right_h:start_right_h + dest.shape[0],min_shift:] = dest
-        total_img = total_img.astype(np.uint8)
+        #total_img = total_img.astype(np.uint8)
         return min_h, min_shift, total_img
-
 
     # focal_length in pixels
     def runAlgorithm(self, folder_name, focal_length, mapping):
@@ -142,8 +177,9 @@ class Panorama:
         for img_name in img_names[1:]:
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)
+            
             print "Convolving now: "+time.ctime()  # TODO: Remove after tested
-            panorama = self.convolve(panorama, mapped)[2]
+            h, shift, panorama = self.pyramid_convolve(panorama, mapped)
             print "Done convolving: "+time.ctime()  # TODO: Remove after tested
         publishImage(panorama)
         return panorama
@@ -168,9 +204,10 @@ if __name__ == "__main__":
     Panorama().runMain()
     print ""
     ### Code to test convolve(): ###
-    # source = readimage("data/o-brienleft.png")[:-10]
-    # dest = readimage("data/o-brienright.png")[10:]
-    # min_h, min_shift, total_img = Panorama().convolve(source, dest, 20)
-    # displayImage(total_img)
+    #source = readimage("output/image2.png")[:-10].astype(np.float32)/255
+    #dest = readimage("output/image3.png")[10:].astype(np.float32)/255
+    #_,_,total_img = Panorama().pyramid_convolve(source, dest)
+    #print np.max(total_img)
+    #displayImage(total_img)
 
 
