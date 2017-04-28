@@ -303,10 +303,14 @@ class PoissonSolver:
         return x
     def seamless_gradient(self, src, dst, start, end):
         start_val = src[start]
-        end_val = 0
+        end_val = start_val
         if end[0] >= 0 and end[0] < src.shape[0] and end[1] >= 0 and end[1] < src.shape[1]:
             end_val = src[end]
         return float(start_val) - float(end_val)
+    def mixed_gradient(self, src, dst, start, end):
+        src_gradient = self.seamless_gradient(src, dst, start, end)
+        dest_gradient = self.seamless_gradient(dst, src, start, end)
+        return max(src_gradient, dest_gradient)
     def poisson(self, src, dst, mask, point_tl, guidance_func):
         region = mask.shape
         num_vertices = region[0] * region[1]
@@ -328,7 +332,8 @@ class PoissonSolver:
                     else:
                         y_neighbor = y + point_tl[0]
                         x_neighbor = x + 1 + point_tl[1]
-                        if x_neighbor < src.shape[1]:
+                        if x_neighbor < dst.shape[1]:
+                            counter += 1
                             b[i] += dst[y_neighbor, x_neighbor]
 
                     b[i] += guidance_func(src, dst, (y, x), (y, x-1))
@@ -339,6 +344,7 @@ class PoissonSolver:
                         y_neighbor = y + point_tl[0]
                         x_neighbor = x - 1 + point_tl[1]
                         if x_neighbor >= 0:
+                            counter += 1
                             b[i] += dst[y_neighbor, x_neighbor]
 
                     b[i] += guidance_func(src, dst, (y, x), (y + 1, x))
@@ -348,7 +354,8 @@ class PoissonSolver:
                     else:
                         y_neighbor = y + 1 + point_tl[0]
                         x_neighbor = x + point_tl[1]
-                        if y_neighbor < src.shape[0]:
+                        if y_neighbor < dst.shape[0]:
+                            counter += 1
                             b[i] += dst[y_neighbor, x_neighbor]
                     
                     b[i] += guidance_func(src, dst, (y, x), (y - 1, x))
@@ -359,19 +366,26 @@ class PoissonSolver:
                         y_neighbor = y - 1 + point_tl[0]
                         x_neighbor = x + point_tl[1]
                         if y_neighbor >= 0:
+                            counter += 1
                             b[i] += dst[y_neighbor, x_neighbor]
                     A[i,i] = counter
-        #c_factors = cho_factor(A)
-        #points = cho_solve(c_factors, b)
-        #points = cg(A, b)
-        points = self.gauss_seidel(A, b, 5000)
+        print(A)
+        c_factors = cho_factor(A)
+        points = cho_solve(c_factors, b)
+        #points = cg(A, b)[0]
+        #points = self.gauss_seidel(A, b, 5000)
         print "To matrix"+time.ctime()
+        print(points)
         for y in range(region[0]):
             for x in range(region[1]):
                 if mask[y, x] > 0.5:
                     #index
                     i = x + y * region[1]
-                    dst[y + point_tl[0], x + point_tl[1]] = points[i]
+                    if points[i] > 1:
+                        dst[y + point_tl[0], x + point_tl[1]] = 1
+                    elif points[i] > 0:
+                        dst[y + point_tl[0], x + point_tl[1]] = points[i]
+        print(dst)
         return dst
 
 # Main
@@ -390,13 +404,15 @@ if __name__ == "__main__":
     #displayImage(total_img)
     ### Code to test Poisson(): ###
     print "Poisson now: "+time.ctime()  # TODO: Remove after tested
-    dest = rgb2gray(readimage("data/fishingscene.jpeg").astype(float))/255
-    source = rgb2gray(readimage("data/o-brien.jpg").astype(float))/255
-    source = misc.imresize(source, 0.50)
+    dest = rgb2gray(readimage("data/fishingscene.jpeg"))
+    source = rgb2gray(readimage("data/o-brien.jpg"))
     quarter_x = int(dest.shape[1]/4)
     quarter_y = int(dest.shape[0]/4)
     mask = np.ones(source.shape)
     poisson = PoissonSolver()
+    dest = dest.astype(float)/255
+    source= source.astype(float)
+    print(source)
     output_img = poisson.poisson(source, dest, mask, (quarter_y, quarter_x), poisson.seamless_gradient)
     displayImage(output_img)
     print "Done poisson: "+time.ctime()  # TODO: Remove after tested
