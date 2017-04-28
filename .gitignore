@@ -1,2 +1,5 @@
 *.DS_Store
 *.pyc
+data/vlsb-movie/
+data/woods-movie
+
