@@ -9,6 +9,7 @@ from scipy.ndimage.filters import gaussian_filter, sobel
 from scipy.signal import fftconvolve
 from scipy.sparse.linalg import cg
 from scipy.linalg import cho_solve, cho_factor, cholesky
+import pyamg
 
 # Parameters and defaults
 image_num = 1
@@ -370,10 +371,11 @@ class PoissonSolver:
                             b[i] += dst[y_neighbor, x_neighbor]
                     A[i,i] = counter
         print(A)
-        c_factors = cho_factor(A)
-        points = cho_solve(c_factors, b)
+        #c_factors = cho_factor(A)
+        #points = cho_solve(c_factors, b)
         #points = cg(A, b)[0]
         #points = self.gauss_seidel(A, b, 5000)
+        points = pyamg.solve(A, b)
         print "To matrix"+time.ctime()
         print(points)
         for y in range(region[0]):
