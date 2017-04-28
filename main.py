@@ -6,6 +6,9 @@ import sys, os, time, glob
 from scipy import misc
 from scipy.interpolate import RegularGridInterpolator as RGI
 from scipy.ndimage.filters import gaussian_filter, sobel
+from scipy.signal import fftconvolve
+from scipy.sparse.linalg import cg
+from scipy.linalg import cho_solve, cho_factor, cholesky
 
 # Parameters and defaults
 image_num = 1
@@ -51,7 +54,8 @@ def displayImage(image, title=None):
 
 
 
-
+def rgb2gray(rgb):
+    return np.dot(rgb[...,:3], [0.299, 0.587, 0.114])
 class Panorama:
     def __init__(self):
         print "\nCS 284B Final Project: Panoramas"
@@ -118,6 +122,8 @@ class Panorama:
             h, shift = self.freq_convolve(source, dest, freq_type)
         elif method == "freqspace":
             h, shift = self.freqspace_convolve(source, dest, freq_type)
+        elif method == "fourier":
+            h, shift = self.fourier_convolve(source, dest)
         else:
             raise ValueError("Method not recognized.")
         return self.compose(source, dest, shift, h)
@@ -130,8 +136,13 @@ class Panorama:
             imgs.insert(0, current)
         return imgs
     def pyramid_convolve_gradient(self, source, dest, threshold=30, drift_min=-20, drift_max=20, shift_min = 0, shift_max = None):
-        source = sobel(source)
-        dest = sobel(dest)
+        source_x = sobel(source, axis=0, mode="constant")
+        source_y = sobel(source, axis=1, mode="constant")
+        source = np.hypot(source_x, source_y)
+
+        dest_x = sobel(dest, axis=0, mode="constant")
+        dest_y = sobel(dest, axis=1, mode="constant")
+        dest = np.hypot(dest_x, dest_y)
         return self.pyramid_convolve(source, dest, threshold, drift_min, drift_max, shift_min, shift_max)
     def pyramid_convolve(self, source, dest, threshold=30, drift_min=-20, drift_max=20, shift_min = 0, shift_max = None):
         #if source.shape != dest.shape:
@@ -157,8 +168,30 @@ class Panorama:
         return curr_h, curr_shift
     def getPower2Dims(self, dims):
         return (2**np.ceil(np.log2(dims))).astype(int)
-    def rgb2gray(self, rgb):
-        return np.dot(rgb[...,:3], [0.299, 0.587, 0.114])
+    def fourier_convolve(self, source, dest):
+        source_img = rgb2gray(source)
+        dest_img = rgb2gray(dest)
+
+        source_x = sobel(source_img, axis=0, mode="constant")
+        source_y = sobel(source_img, axis=1, mode="constant")
+        source_img = np.hypot(source_x, source_y)
+
+        dest_x = sobel(dest_img, axis=0, mode="constant")
+        dest_y = sobel(dest_img, axis=1, mode="constant")
+        dest_img = np.hypot(dest_x, dest_y)
+        displayImage(dest_img)
+        displayImage(source_img)
+        ndims = (source_img.shape[0] + dest_img.shape[0] - 1, source_img.shape[1] + dest_img.shape[1] - 1)
+        source_freq = np.conjugate(np.fft.fft2(source_img, ndims))
+        dest_freq = np.fft.fft2(dest_img, ndims)
+        total_freq = np.multiply(source_freq, dest_freq)/np.absolute(np.multiply(source_freq, dest_freq))
+        total_img = np.fft.ifft2(total_freq).real
+        print(total_img.shape)
+        displayImage(total_img)
+  
+        h, shift = np.unravel_index(np.argmax(total_img), total_img.shape)
+        print str(h) + ":" + str(shift)
+        return h, shift
     def freq_convolve(self, source, dest, filter_type="lpf"):
         source_img = self.rgb2gray(source)
         dest_img = self.rgb2gray(dest)
@@ -230,7 +263,7 @@ class Panorama:
 
     # focal_length in pixels
     def runAlgorithm(self, folder_name, focal_length, mapping):
-        img_names = glob.glob("data/" + folder_name + "/*")[:2]  # TODO: Remove slicing after finished testing
+        img_names = glob.glob("data/" + folder_name + "/*")  # TODO: Remove slicing after finished testing
         panorama = []
         image = readimage(img_names[0])
         mapped = self.warpImage(image, focal_length, mapping)
@@ -239,7 +272,7 @@ class Panorama:
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)
             print "Convolving now: "+time.ctime()  # TODO: Remove after tested
-            panorama = self.convolve(panorama, mapped, method="pyramid_gradient")
+            panorama = self.convolve(panorama, mapped, method="pyramid")
             print "Panorama:" + str(panorama.shape)
             print "Done convolving: "+time.ctime()  # TODO: Remove after tested
         publishImage(panorama)
@@ -254,8 +287,92 @@ class Panorama:
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
         return
 
+class PoissonSolver:
+    def gauss_seidel(self, A, b, iterations=1000):
+        x = np.zeros(b.shape)
+        for i in range(iterations):
+            x_n = np.zeros(b.shape)
+            for i in range(len(A)):
+                s1 = np.dot(A[i, :i], x_n[:i])
+                s2 = np.dot(A[i, i + 1:], x[i + 1:])
+                x_n[i] = (b[i] - s1 - s2) / A[i, i]
 
-        
+            if np.allclose(x, x_n, rtol=1e-8):
+                break
+            x = x_n
+        return x
+    def seamless_gradient(self, src, dst, start, end):
+        start_val = src[start]
+        end_val = 0
+        if end[0] >= 0 and end[0] < src.shape[0] and end[1] >= 0 and end[1] < src.shape[1]:
+            end_val = src[end]
+        return float(start_val) - float(end_val)
+    def poisson(self, src, dst, mask, point_tl, guidance_func):
+        region = mask.shape
+        num_vertices = region[0] * region[1]
+
+        A = np.zeros((num_vertices, num_vertices))
+        b = np.zeros(num_vertices)
+        #Build matrix
+        for y in range(region[0]):
+            for x in range(region[1]):
+                if mask[y, x] > 0.5:
+                    #index
+                    i = x + y * region[1]
+                    counter = 0
+
+                    b[i] += guidance_func(src, dst, (y, x), (y, x+1))
+                    if x + 1 < region[1] and mask[y, x + 1] > 0.5:
+                        A[i,i + 1] = -1
+                        counter += 1
+                    else:
+                        y_neighbor = y + point_tl[0]
+                        x_neighbor = x + 1 + point_tl[1]
+                        if x_neighbor < src.shape[1]:
+                            b[i] += dst[y_neighbor, x_neighbor]
+
+                    b[i] += guidance_func(src, dst, (y, x), (y, x-1))
+                    if x - 1 >= 0 and mask[y, x - 1] > 0.5:
+                        A[i,i - 1] = -1
+                        counter += 1
+                    else:
+                        y_neighbor = y + point_tl[0]
+                        x_neighbor = x - 1 + point_tl[1]
+                        if x_neighbor >= 0:
+                            b[i] += dst[y_neighbor, x_neighbor]
+
+                    b[i] += guidance_func(src, dst, (y, x), (y + 1, x))
+                    if y + 1 < region[0] and mask[y + 1, x] > 0.5:
+                        A[i, i + region[1]] = -1
+                        counter += 1
+                    else:
+                        y_neighbor = y + 1 + point_tl[0]
+                        x_neighbor = x + point_tl[1]
+                        if y_neighbor < src.shape[0]:
+                            b[i] += dst[y_neighbor, x_neighbor]
+                    
+                    b[i] += guidance_func(src, dst, (y, x), (y - 1, x))
+                    if y - 1 >= 0 and mask[y - 1, x] > 0.5:
+                        A[i, i - region[1]] = -1
+                        counter += 1
+                    else:
+                        y_neighbor = y - 1 + point_tl[0]
+                        x_neighbor = x + point_tl[1]
+                        if y_neighbor >= 0:
+                            b[i] += dst[y_neighbor, x_neighbor]
+                    A[i,i] = counter
+        #c_factors = cho_factor(A)
+        #points = cho_solve(c_factors, b)
+        #points = cg(A, b)
+        points = self.gauss_seidel(A, b, 5000)
+        print "To matrix"+time.ctime()
+        for y in range(region[0]):
+            for x in range(region[1]):
+                if mask[y, x] > 0.5:
+                    #index
+                    i = x + y * region[1]
+                    dst[y + point_tl[0], x + point_tl[1]] = points[i]
+        return dst
 
 # Main
 if __name__ == "__main__":
@@ -265,13 +382,23 @@ if __name__ == "__main__":
     #Panorama().runMain()
     #print ""
     ### Code to test convolve(): ###
-    source = readimage("data/Synthetic/img01.jpg")
-    dest = readimage("data/Synthetic/img09.jpg")
-    panorama = Panorama()
-    source = panorama.warpImage(source,330, panorama.cylindricalMappingIndices)
-    dest = panorama.warpImage(dest, 330, panorama.cylindricalMappingIndices)
-    total_img = panorama.convolve(source, dest, method="freq", freq_type="lpf")
-    print np.max(total_img)
-    displayImage(total_img)
+    #source = readimage("data/o-brienleft.jpg")
+    #dest = readimage("data/o-brienright.jpg")
+    #panorama = Panorama()
+    #total_img = panorama.convolve(source, dest, method="fourier")
+    #print np.max(total_img)
+    #displayImage(total_img)
+    ### Code to test Poisson(): ###
+    print "Poisson now: "+time.ctime()  # TODO: Remove after tested
+    dest = rgb2gray(readimage("data/fishingscene.jpeg").astype(float))/255
+    source = rgb2gray(readimage("data/o-brien.jpg").astype(float))/255
+    source = misc.imresize(source, 0.50)
+    quarter_x = int(dest.shape[1]/4)
+    quarter_y = int(dest.shape[0]/4)
+    mask = np.ones(source.shape)
+    poisson = PoissonSolver()
+    output_img = poisson.poisson(source, dest, mask, (quarter_y, quarter_x), poisson.seamless_gradient)
+    displayImage(output_img)
+    print "Done poisson: "+time.ctime()  # TODO: Remove after tested
 
 
