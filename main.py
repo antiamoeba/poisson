@@ -8,6 +8,7 @@ from scipy.interpolate import RegularGridInterpolator as RGI
 from scipy.ndimage.filters import gaussian_filter, sobel
 from scipy.signal import fftconvolve
 from scipy.sparse.linalg import cg
+from scipy import sparse
 from scipy.linalg import cho_solve, cho_factor, cholesky
 import pyamg
 
@@ -268,21 +269,21 @@ class Panorama:
 
     # focal_length in pixels
     def runAlgorithm(self, folder_name, focal_length, mapping):
-        img_names = glob.glob("data/" + folder_name + "/*")  # TODO: Remove slicing after finished testing
+        img_names = glob.glob("data/" + folder_name + "/*")[::-1]  # TODO: Remove slicing after finished testing
         poisson = PoissonSolver()
         panorama = []
         image = readimage(img_names[0])
         mapped = self.warpImage(image, focal_length, mapping)
-        mapped = misc.imresize(mapped, 0.5).astype(float)/255
+        mapped = misc.imresize(mapped, 0.25).astype(float)/255
         panorama = mapped
         for img_name in img_names[1:]:
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)
-            mapped = misc.imresize(mapped, 0.5).astype(float)/255
+            mapped = misc.imresize(mapped, 0.25).astype(float)/255
             print "Convolving now: "+time.ctime()  # TODO: Remove after tested
             h, shift, simple_panorama = self.convolve(panorama, mapped, method="pyramid")
             mask = np.ones((mapped.shape[0], mapped.shape[1]))
-            print "Poisson:"
+            #print "Poisson:"
             #red
             print str(h) + ":" + str(shift)
             red = poisson.poisson(mapped[:,:,0], panorama[:,:,0], mask, (h, shift), poisson.seamless_gradient)
@@ -296,6 +297,7 @@ class Panorama:
             panorama[:,:,0] = red
             panorama[:,:,1] = green
             panorama[:,:,2] = blue
+            #panorama = simple_panorama
             print "Panorama:" + str(panorama.shape)
             print "Done convolving: "+time.ctime()  # TODO: Remove after tested
         publishImage(panorama)
@@ -304,8 +306,9 @@ class Panorama:
 
     def runMain(self):
         print "\nRunning Cylindrical Panorama Algorithm:"
-        self.runAlgorithm("synthetic", 330, self.cylindricalMappingIndices)
-
+        #self.runAlgorithm("synthetic", 330, self.cylindricalMappingIndices)
+        #self.runAlgorithm("vlsb", 6600.838, self.cylindricalMappingIndices)
+        self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
         # print "\nRunning Spherical Panorama Algorithm:"
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
         return
@@ -426,6 +429,7 @@ class PoissonSolver:
                             b[i] += src[y, x]
                     A[i,i] = counter
         print A.shape
+        A = sparse.csr_matrix(A)
         #c_factors = cho_factor(A)
         #points = cho_solve(c_factors, b)
         #points = cg(A, b)[0]
