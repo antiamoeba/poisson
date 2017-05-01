@@ -14,7 +14,9 @@ from scipy import sparse
 from scipy.linalg import cho_solve, cho_factor, cholesky
 from skimage.draw import circle
 from skimage.feature import corner_harris, peak_local_max
+from skimage import img_as_float
 import pyamg
+from cv2 import resize
 
 # Parameters and defaults
 image_num = 1
@@ -109,6 +111,25 @@ def compose(source, dest, shift, h):
     total_img[source_start_y:source_start_y + source.shape[0], source_start_x:source_start_x + source.shape[1]] = source
     return total_img
 
+def calcImagePyramid(img, threshold=30, levels=None, resize="nearest"):
+    imgs = []
+    current = img_as_float(img)
+    imgs.insert(0, current)
+    if levels == None:
+        while current.shape[0] > threshold and current.shape[1] > threshold:
+            current = img_as_float(misc.imresize(current, 0.5))
+            imgs.insert(0, current)
+    else:
+        iterations = 1
+        while iterations < levels:
+            if np.all(current == 1):
+                current = np.ones((int(current.shape[0]/2),int(current.shape[0]/2)))
+            else:
+                current = img_as_float(misc.imresize(current, 0.5, interp=resize))
+            imgs.insert(0, current)
+            iterations += 1
+    return imgs
+    
 
 class Panorama:
     def __init__(self):
@@ -165,22 +186,6 @@ class Panorama:
         else:
             raise ValueError("Method not recognized.")
         return h, shift, compose(dest, source, shift, h)
-    def calcImagePyramid(self, img, threshold=30, levels=None):
-        imgs = []
-        current = img
-        imgs.insert(0, current)
-        if levels == None:
-            while current.shape[0] > threshold and current.shape[1] > threshold:
-                current = misc.imresize(current, 0.5)
-                imgs.insert(0, current)
-        else:
-            iterations = 1
-            while iterations < levels:
-                current = misc.imresize(current, 0.5)
-                imgs.insert(0, current)
-                iterations += 1
-        return imgs
-    
     def pyramid_convolve_gradient(self, source, dest, threshold=30, drift_min=-20, drift_max=20, shift_min = 0, shift_max = None):
         source_x = sobel(source, axis=0, mode="constant")
         source_y = sobel(source, axis=1, mode="constant")
@@ -194,8 +199,8 @@ class Panorama:
     def pyramid_convolve(self, source, dest, threshold=30, drift_min=-20, drift_max=20, shift_min = 0, shift_max = None):
         #if source.shape != dest.shape:
         #    raise ValueError('Source and destination images do not have the same dimension!')
-        sourcePyramid = self.calcImagePyramid(source, threshold)
-        destPyramid = self.calcImagePyramid(dest, threshold)
+        sourcePyramid = calcImagePyramid(source, threshold)
+        destPyramid = calcImagePyramid(dest, threshold)
         
         #start
         if shift_max == None:
@@ -228,15 +233,11 @@ class Panorama:
         dest_x = sobel(dest_img, axis=0, mode="constant")
         dest_y = sobel(dest_img, axis=1, mode="constant")
         dest_img = np.hypot(dest_x, dest_y)
-        displayImage(dest_img)
-        displayImage(source_img)
         ndims = (source_img.shape[0] + dest_img.shape[0] - 1, source_img.shape[1] + dest_img.shape[1] - 1)
         source_freq = np.conjugate(np.fft.fft2(source_img, ndims))
         dest_freq = np.fft.fft2(dest_img, ndims)
         total_freq = np.multiply(source_freq, dest_freq)/np.absolute(np.multiply(source_freq, dest_freq))
         total_img = np.fft.ifft2(total_freq).real
-        print(total_img.shape)
-        displayImage(total_img)
   
         h, shift = np.unravel_index(np.argmax(total_img), total_img.shape)
         return h, shift
@@ -310,24 +311,33 @@ class Panorama:
         
     def poisson_pyramid(self, src, dest, h, shift):
         mask = np.ones((src.shape[0], src.shape[1]))
+        mask_pyramid = calcImagePyramid(mask, levels=3)
         poisson = PoissonSolver()
         for i in range(3):
             src_curr = src[:,:,i]
             dest_curr = dest[:,:,i]
-            src_pyramid = self.calcImagePyramid(src_curr, levels=3)
-            dest_pyramid = self.calcImagePyramid(dest_curr, levels=3)
-            mask_pyramid = self.calcImagePyramid(mask, levels=3)
+            src_pyramid = calcImagePyramid(src_curr, levels=3)
+            dest_pyramid = calcImagePyramid(dest_curr, levels=3)
             prev_level = poisson.poisson(src_pyramid[0], dest_pyramid[0], mask_pyramid[0], (int(h/4), int(shift/4)), poisson.seamless_gradient)
+            prev_level = resize(prev_level, None, fx=2, fy=2)
             for j in range(1, 3):
                 #erode mask
                 mask_j = mask_pyramid[j]
+                mask_j[mask_j >= 0.5] = 1
+                mask_j[mask_j < 0.5] = 0
                 slices = []
-                curr_eroded = mask_j
-                while np.count_nonzero(curr_eroded) > 30:
-                    curr_eroded = binary_erosion(curr_eroded, structure=np.ones((10, 10)))
-                    slices.append(mask_j - curr_eroded)
+                curr_eroded = mask_j.astype(int)
+                flag = False
+                while not flag:
+                    n_eroded = binary_erosion(curr_eroded, structure=np.ones((10, 10))).astype(int)
+                    diff = curr_eroded - n_eroded
+                    slices.append(diff)
+                    curr_eroded = n_eroded
+                    if np.count_nonzero(curr_eroded) == 0:
+                        flag = True
                 for slice_mask in slices:
-                    slice_curr = poisson.poisson(src_pyramid[j], prev_level, mask_pyramid[0], (int(h/4), int(shift/4)), poisson.seamless_gradient)
+                    slice_total = poisson.poisson(src_pyramid[j], prev_level, mask_pyramid[j], (int(h/(2**(2-j))), int(shift/(2**(2-j)))), poisson.seamless_gradient)
+                    
         
     # focal_length in pixels
     def runAlgorithm(self, folder_name, focal_length, mapping, align_method="convolve"):
@@ -337,15 +347,21 @@ class Panorama:
         panorama = []
         image = readimage(img_names[0])
         mapped = self.warpImage(image, focal_length, mapping).astype(float)
-        #mapped = misc.imresize(mapped, 1).astype(float)/255
+        mapped = misc.imresize(mapped, 0.25).astype(float)/255
         panorama = mapped
-        for img_name in img_names[1:]:
+        for img_name in img_names[1:2]:
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)
-            #mapped = misc.imresize(mapped, 0.25).astype(float)/255
+            mapped = misc.imresize(mapped, 0.25).astype(float)/255
             if align_method == "convolve":
                 print "Convolving now: "+time.ctime()  # TODO: Remove after tested
                 h, shift, simple_panorama = self.convolve(panorama, mapped, method="pyramid")
+                self.poisson_pyramid(mapped, panorama, h, shift)
+                #panorama = simple_panorama
+                print "Panorama:" + str(panorama.shape)
+                print "Done convolving: "+time.ctime()  # TODO: Remove after tested
+            elif align_method == "features":
+                h, shift, correspondences = feature_detector.getAutoCorrespondences(panorama, mapped)
                 mask = np.ones((mapped.shape[0], mapped.shape[1]))
                 #print "Poisson:"
                 #red
@@ -361,11 +377,9 @@ class Panorama:
                 panorama[:,:,0] = red
                 panorama[:,:,1] = green
                 panorama[:,:,2] = blue
-                #panorama = simple_panorama
                 print "Panorama:" + str(panorama.shape)
                 print "Done convolving: "+time.ctime()  # TODO: Remove after tested
-            elif align_method == "features":
-                panorama = feature_detector.getFeaturesAndCombine(panorama, mapped)
+
         publishImage(panorama)
         return panorama
 
@@ -375,7 +389,7 @@ class Panorama:
         # self.runAlgorithm("vlsb", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features")
-        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features")
+        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "convolve")
         
         # print "\nRunning Spherical Panorama Algorithm:"
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
