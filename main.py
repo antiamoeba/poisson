@@ -349,7 +349,7 @@ class Panorama:
         mapped = self.warpImage(image, focal_length, mapping).astype(float)
         mapped = misc.imresize(mapped, 0.25).astype(float)/255
         panorama = mapped
-        for img_name in img_names[1:2]:
+        for img_name in img_names[1:]:
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)
             mapped = misc.imresize(mapped, 0.25).astype(float)/255
