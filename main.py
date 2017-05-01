@@ -6,6 +6,7 @@ import sys, os, time, glob
 from scipy import misc
 from scipy.interpolate import RegularGridInterpolator as RGI
 from scipy.ndimage.filters import gaussian_filter, sobel
+from scipy.ndimage.morphology import binary_erosion
 from scipy.signal import fftconvolve
 from scipy.sparse.linalg import cg
 from scipy import sparse
@@ -137,13 +138,20 @@ class Panorama:
         else:
             raise ValueError("Method not recognized.")
         return h, shift, compose(dest, source, shift, h)
-    def calcImagePyramid(self, img, threshold=30):
+    def calcImagePyramid(self, img, threshold=30, levels=None):
         imgs = []
         current = img
         imgs.insert(0, current)
-        while current.shape[0] > threshold and current.shape[1] > threshold:
-            current = misc.imresize(current, 0.5)
-            imgs.insert(0, current)
+        if levels == None:
+            while current.shape[0] > threshold and current.shape[1] > threshold:
+                current = misc.imresize(current, 0.5)
+                imgs.insert(0, current)
+        else:
+            iterations = 1
+            while iterations < levels:
+                current = misc.imresize(current, 0.5)
+                imgs.insert(0, current)
+                iterations += 1
         return imgs
     def pyramid_convolve_gradient(self, source, dest, threshold=30, drift_min=-20, drift_max=20, shift_min = 0, shift_max = None):
         source_x = sobel(source, axis=0, mode="constant")
@@ -266,37 +274,43 @@ class Panorama:
                     min_h = drift
         return min_h, min_shift
         
-
+    def poisson_pyramid(self, src, dest, h, shift):
+        mask = np.ones((src.shape[0], src.shape[1]))
+        poisson = PoissonSolver()
+        for i in range(3):
+            src_curr = src[:,:,i]
+            dest_curr = dest[:,:,i]
+            src_pyramid = self.calcImagePyramid(src_curr, levels=3)
+            dest_pyramid = self.calcImagePyramid(dest_curr, levels=3)
+            mask_pyramid = self.calcImagePyramid(mask, levels=3)
+            prev_level = poisson.poisson(src_pyramid[0], dest_pyramid[0], mask_pyramid[0], (int(h/4), int(shift/4)), poisson.seamless_gradient)
+            for j in range(1, 3):
+                #erode mask
+                mask_j = mask_pyramid[j]
+                slices = []
+                curr_eroded = mask_j
+                while np.count_nonzero(curr_eroded) > 30:
+                    curr_eroded = binary_erosion(curr_eroded, structure=np.ones((10, 10)))
+                    slices.append(mask_j - curr_eroded)
+                for slice_mask in slices:
+                    slice_curr = poisson.poisson(src_pyramid[j], prev_level, mask_pyramid[0], (int(h/4), int(shift/4)), poisson.seamless_gradient)
+        
     # focal_length in pixels
     def runAlgorithm(self, folder_name, focal_length, mapping):
-        img_names = glob.glob("data/" + folder_name + "/*")[::-1]  # TODO: Remove slicing after finished testing
-        poisson = PoissonSolver()
+        img_names = glob.glob("data/" + folder_name + "/*")[:2]  # TODO: Remove slicing after finished testing
+        img_names = img_names[::-1]
         panorama = []
         image = readimage(img_names[0])
-        mapped = self.warpImage(image, focal_length, mapping)
-        mapped = misc.imresize(mapped, 0.25).astype(float)/255
+        mapped = self.warpImage(image, focal_length, mapping).astype(float)
+        #mapped = misc.imresize(mapped, 1).astype(float)/255
         panorama = mapped
         for img_name in img_names[1:]:
             image = readimage(img_name)
-            mapped = self.warpImage(image, focal_length, mapping)
-            mapped = misc.imresize(mapped, 0.25).astype(float)/255
+            mapped = self.warpImage(image, focal_length, mapping).astype(float)
+            #mapped = misc.imresize(mapped, 1).astype(float)/255
             print "Convolving now: "+time.ctime()  # TODO: Remove after tested
             h, shift, simple_panorama = self.convolve(panorama, mapped, method="pyramid")
-            mask = np.ones((mapped.shape[0], mapped.shape[1]))
-            #print "Poisson:"
-            #red
-            print str(h) + ":" + str(shift)
-            red = poisson.poisson(mapped[:,:,0], panorama[:,:,0], mask, (h, shift), poisson.seamless_gradient)
-            #displayImage(red)
-            #green
-            green = poisson.poisson(mapped[:,:,1], panorama[:,:,1], mask, (h, shift), poisson.seamless_gradient)
-            #blue
-            blue = poisson.poisson(mapped[:,:,2], panorama[:,:,2], mask, (h, shift), poisson.seamless_gradient)
-
-            panorama = np.zeros((red.shape[0], red.shape[1], 3))
-            panorama[:,:,0] = red
-            panorama[:,:,1] = green
-            panorama[:,:,2] = blue
+            self.poisson_pyramid(mapped, simple_panorama, h, shift)
             #panorama = simple_panorama
             print "Panorama:" + str(panorama.shape)
             print "Done convolving: "+time.ctime()  # TODO: Remove after tested
@@ -346,18 +360,19 @@ class PoissonSolver:
             return src_gradient
     def poisson(self, src, dst, mask, point_tl, guidance_func):
         region = mask.shape
-        num_vertices = region[0] * region[1]
+        num_vertices = np.count_nonzero(mask)
 
         A = np.zeros((num_vertices, num_vertices))
         b = np.zeros(num_vertices)
+        i = -1
         #Build matrix
         for y in range(region[0]):
             for x in range(region[1]):
-                x_dst = x + point_tl[1]
-                y_dst = y + point_tl[0]
-                if mask[y, x] > 0.5:               
+                if mask[y, x] > 0.5:    
+                    x_dst = x + point_tl[1]
+                    y_dst = y + point_tl[0]           
                     #index
-                    i = x + y * region[1]
+                    i += 1
                     counter = 0
 
                     b[i] += guidance_func(src, dst, (y, x), (y, x+1), point_tl)
@@ -428,27 +443,25 @@ class PoissonSolver:
                             counter += 1
                             b[i] += src[y, x]
                     A[i,i] = counter
-        print A.shape
         A = sparse.csr_matrix(A)
         #c_factors = cho_factor(A)
         #points = cho_solve(c_factors, b)
         #points = cg(A, b)[0]
         #points = self.gauss_seidel(A, b, 5000)
         points = pyamg.solve(A, b, verb=False)
-        print points
         img = np.zeros(region)
+        i = -1
         for y in range(region[0]):
             for x in range(region[1]):
                 if mask[y, x] > 0.5:
                     #index
-                    i = x + y * region[1]
+                    i += 1
                     if points[i] > 1:
                         img[y, x] = 1
                     elif points[i] < 0:
                         img[y, x] = 0
                     else:
                         img[y, x] = points[i]
-
         return compose(img, dst, point_tl[1], point_tl[0])
 
 # Main
@@ -467,8 +480,8 @@ if __name__ == "__main__":
     #displayImage(total_img)
     ### Code to test Poisson(): ###
     #print "Poisson now: "+time.ctime()  # TODO: Remove after tested
-    #dest = rgb2gray(readimage("output/image1.png"))
-    #source = rgb2gray(readimage("output/image2.png"))
+    #dest = rgb2gray(readimage("data/fishingscene.jpeg"))
+    #source = rgb2gray(readimage("data/o-brien.jpg"))
     #dest = misc.imresize(dest, 0.5)
     #source = misc.imresize(source, 0.5)
     #quarter_x = int(231/2)
@@ -476,8 +489,8 @@ if __name__ == "__main__":
     #mask = np.ones(source.shape)
     #poisson = PoissonSolver()
     #dest = dest.astype(float)/255
-    #source= source.astype(float)/255
-    #output_img = poisson.poisson(dest, source, mask, (quarter_y, quarter_x), poisson.seamless_gradient)
+    #source= source.astype(float)
+    #output_img = poisson.poisson(source, dest, mask, (quarter_y, quarter_x), poisson.seamless_gradient)
     #displayImage(output_img)
     #print "Done poisson: "+time.ctime()  # TODO: Remove after tested
 
