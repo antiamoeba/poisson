@@ -3,6 +3,7 @@ from __future__ import division
 import numpy as np
 import matplotlib.pyplot as plt
 import sys, os, time, glob
+import scipy
 from scipy import misc
 from scipy.interpolate import RegularGridInterpolator as RGI
 from scipy.ndimage.filters import gaussian_filter, sobel
@@ -10,6 +11,8 @@ from scipy.signal import fftconvolve
 from scipy.sparse.linalg import cg
 from scipy import sparse
 from scipy.linalg import cho_solve, cho_factor, cholesky
+from skimage.draw import circle
+from skimage.feature import corner_harris, peak_local_max
 import pyamg
 
 # Parameters and defaults
@@ -43,6 +46,29 @@ def publishImage(image, title=None, output_directory=True):
     plt.imsave(imgName, image)
     return
 
+def publishImageScatter(image, scatter1, scatter2=None, scatter3=None, scatter4=None, title=None):
+    if len(image.shape) == 2:
+        image = np.dstack([image for _ in range(3)])
+    if title:
+        imgName = output_dir + '/' + title
+    else:
+        global image_num
+        imgName = output_dir + '/image' + str(image_num) + '.png'
+        image_num += 1
+    plt.figure()
+    plt.axis('off')
+    plt.imshow(image)
+    plt.scatter(x=scatter1[0], y=scatter1[1], c='r', s=15)
+    if scatter2 is not None:
+        plt.scatter(x=scatter2[0], y=scatter2[1], c='b', s=15)
+    if scatter3 is not None:
+        plt.scatter(x=scatter3[0], y=scatter3[1], c='g', s=15)
+    if scatter4 is not None:
+        plt.scatter(x=scatter4[0], y=scatter4[1], c='y', s=15)
+    plt.savefig(imgName, bbox_inches='tight')
+    plt.close()
+    return
+
 def displayImage(image, title=None):
     if len(image.shape) == 2:
         image = np.dstack([image for _ in range(3)])
@@ -57,6 +83,7 @@ def displayImage(image, title=None):
 
 def rgb2gray(rgb):
     return np.dot(rgb[...,:3], [0.299, 0.587, 0.114])
+
 def compose(source, dest, shift, h):
     #bounding box
     top_left_x = min(0, shift)
@@ -80,23 +107,22 @@ def compose(source, dest, shift, h):
     source_start_y = max(0, h)
     total_img[source_start_y:source_start_y + source.shape[0], source_start_x:source_start_x + source.shape[1]] = source
     return total_img
+
+
 class Panorama:
     def __init__(self):
         print "\nCS 284B Final Project: Panoramas"
         return
-
 
     def cylindricalMappingIndices(self, initial_indices, focal_length, center, scaling):
         new_x = focal_length * np.tan((initial_indices[1] - center[1]) / scaling)
         new_y = focal_length * ((initial_indices[0] - center[0]) / scaling) / np.cos((initial_indices[1] - center[1]) / scaling)
         return (new_y, new_x)
 
-
     def sphericalMappingIndices(self, initial_indices, focal_length, center, scaling):
         new_x = focal_length * np.tan((initial_indices[1] - center[1]) / scaling)
         new_y = focal_length * np.tan((initial_indices[0] - center[0]) / scaling) / np.cos((initial_indices[1] - center[1]) / scaling)
         return (new_y, new_x)
-
 
     def warpImage(self, image, focal_length, mapping, scaling=None):
         if scaling is None:
@@ -121,6 +147,7 @@ class Panorama:
         slice_edge = int(0.08 * result.shape[1] / 2.0)
         result = result[:,slice_edge:-slice_edge,:]
         return result
+
     def convolve(self, source, dest, method="pyramid", freq_type="hpf"):
         if method == "pyramid":
             h, shift = self.pyramid_convolve(source, dest)
@@ -137,6 +164,7 @@ class Panorama:
         else:
             raise ValueError("Method not recognized.")
         return h, shift, compose(dest, source, shift, h)
+    
     def calcImagePyramid(self, img, threshold=30):
         imgs = []
         current = img
@@ -145,6 +173,7 @@ class Panorama:
             current = misc.imresize(current, 0.5)
             imgs.insert(0, current)
         return imgs
+    
     def pyramid_convolve_gradient(self, source, dest, threshold=30, drift_min=-20, drift_max=20, shift_min = 0, shift_max = None):
         source_x = sobel(source, axis=0, mode="constant")
         source_y = sobel(source, axis=1, mode="constant")
@@ -154,6 +183,7 @@ class Panorama:
         dest_y = sobel(dest, axis=1, mode="constant")
         dest = np.hypot(dest_x, dest_y)
         return self.pyramid_convolve(source, dest, threshold, drift_min, drift_max, shift_min, shift_max)
+    
     def pyramid_convolve(self, source, dest, threshold=30, drift_min=-20, drift_max=20, shift_min = 0, shift_max = None):
         #if source.shape != dest.shape:
         #    raise ValueError('Source and destination images do not have the same dimension!')
@@ -176,8 +206,10 @@ class Panorama:
             curr_h, curr_shift = self.raw_convolve(curr_source, curr_dest, curr_h*2 - 2, curr_h*2 + 2, curr_shift*2 - 2, curr_shift*2 + 2)
             counter += 1
         return curr_h, curr_shift
+    
     def getPower2Dims(self, dims):
         return (2**np.ceil(np.log2(dims))).astype(int)
+    
     def fourier_convolve(self, source, dest):
         source_img = rgb2gray(source)
         dest_img = rgb2gray(dest)
@@ -201,6 +233,7 @@ class Panorama:
   
         h, shift = np.unravel_index(np.argmax(total_img), total_img.shape)
         return h, shift
+    
     def freq_convolve(self, source, dest, filter_type="lpf"):
         source_img = self.rgb2gray(source)
         dest_img = self.rgb2gray(dest)
@@ -224,6 +257,7 @@ class Panorama:
         dest_out = np.fft.ifft2(dest_freq).real
         h, shift = self.raw_convolve(source_out, dest_out)
         return h, shift
+    
     def freqspace_convolve(self, source, dest, filter_type="hpf"):
         source_img = self.rgb2gray(source)
         dest_img = self.rgb2gray(dest)
@@ -242,6 +276,7 @@ class Panorama:
 
         h, shift = self.raw_convolve(source_freq, dest_freq)
         return h, shift
+    
     def raw_convolve(self, source, dest, drift_min=-20, drift_max=20, shift_min = 0, shift_max = None):
         if shift_max == None:
             shift_max = source.shape[1] - 1
@@ -266,11 +301,11 @@ class Panorama:
                     min_h = drift
         return min_h, min_shift
         
-
     # focal_length in pixels
-    def runAlgorithm(self, folder_name, focal_length, mapping):
-        img_names = glob.glob("data/" + folder_name + "/*")[::-1]  # TODO: Remove slicing after finished testing
+    def runAlgorithm(self, folder_name, focal_length, mapping, align_method="convolve"):
+        img_names = glob.glob("data/" + folder_name + "/*")[::-1]
         poisson = PoissonSolver()
+        feature_detector = FeatureDetection()
         panorama = []
         image = readimage(img_names[0])
         mapped = self.warpImage(image, focal_length, mapping)
@@ -280,38 +315,45 @@ class Panorama:
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)
             mapped = misc.imresize(mapped, 0.25).astype(float)/255
-            print "Convolving now: "+time.ctime()  # TODO: Remove after tested
-            h, shift, simple_panorama = self.convolve(panorama, mapped, method="pyramid")
-            mask = np.ones((mapped.shape[0], mapped.shape[1]))
-            #print "Poisson:"
-            #red
-            print str(h) + ":" + str(shift)
-            red = poisson.poisson(mapped[:,:,0], panorama[:,:,0], mask, (h, shift), poisson.seamless_gradient)
-            #displayImage(red)
-            #green
-            green = poisson.poisson(mapped[:,:,1], panorama[:,:,1], mask, (h, shift), poisson.seamless_gradient)
-            #blue
-            blue = poisson.poisson(mapped[:,:,2], panorama[:,:,2], mask, (h, shift), poisson.seamless_gradient)
+            if align_method == "convolve":
+                print "Convolving now: "+time.ctime()  # TODO: Remove after tested
+                h, shift, simple_panorama = self.convolve(panorama, mapped, method="pyramid")
+                mask = np.ones((mapped.shape[0], mapped.shape[1]))
+                #print "Poisson:"
+                #red
+                print str(h) + ":" + str(shift)
+                red = poisson.poisson(mapped[:,:,0], panorama[:,:,0], mask, (h, shift), poisson.seamless_gradient)
+                #displayImage(red)
+                #green
+                green = poisson.poisson(mapped[:,:,1], panorama[:,:,1], mask, (h, shift), poisson.seamless_gradient)
+                #blue
+                blue = poisson.poisson(mapped[:,:,2], panorama[:,:,2], mask, (h, shift), poisson.seamless_gradient)
 
-            panorama = np.zeros((red.shape[0], red.shape[1], 3))
-            panorama[:,:,0] = red
-            panorama[:,:,1] = green
-            panorama[:,:,2] = blue
-            #panorama = simple_panorama
-            print "Panorama:" + str(panorama.shape)
-            print "Done convolving: "+time.ctime()  # TODO: Remove after tested
+                panorama = np.zeros((red.shape[0], red.shape[1], 3))
+                panorama[:,:,0] = red
+                panorama[:,:,1] = green
+                panorama[:,:,2] = blue
+                #panorama = simple_panorama
+                print "Panorama:" + str(panorama.shape)
+                print "Done convolving: "+time.ctime()  # TODO: Remove after tested
+            elif align_method == "features":
+                panorama = feature_detector.getFeaturesAndCombine(panorama, mapped)
         publishImage(panorama)
         return panorama
 
-
     def runMain(self):
         print "\nRunning Cylindrical Panorama Algorithm:"
-        #self.runAlgorithm("synthetic", 330, self.cylindricalMappingIndices)
-        #self.runAlgorithm("vlsb", 6600.838, self.cylindricalMappingIndices)
-        self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
+        # self.runAlgorithm("synthetic", 330, self.cylindricalMappingIndices)
+        # self.runAlgorithm("vlsb", 6600.838, self.cylindricalMappingIndices)
+        # self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
+        # self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features")
+        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features")
+        
         # print "\nRunning Spherical Panorama Algorithm:"
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
         return
+
+
 
 class PoissonSolver:
     def gauss_seidel(self, A, b, iterations=1000):
@@ -327,6 +369,7 @@ class PoissonSolver:
                 break
             x = x_n
         return x
+
     def seamless_gradient(self, src, dst, start, end, point_tl):
         start_val = 0
         if start[0] >= 0 and start[0] < src.shape[0] and start[1] >= 0 and start[1] < src.shape[1]:
@@ -344,6 +387,7 @@ class PoissonSolver:
             return dest_gradient
         else:
             return src_gradient
+    
     def poisson(self, src, dst, mask, point_tl, guidance_func):
         region = mask.shape
         num_vertices = region[0] * region[1]
@@ -450,6 +494,230 @@ class PoissonSolver:
                         img[y, x] = points[i]
 
         return compose(img, dst, point_tl[1], point_tl[0])
+
+
+
+class FeatureDetection:
+    def __init__(self, plot=False):
+        self.plot = plot
+        return
+
+    def get_harris_corners(self, im, edge_discard=20):
+        assert edge_discard >= 20
+
+        # find harris corners
+        h = corner_harris(im, method='eps', sigma=1)
+        coords = peak_local_max(h, min_distance=1, indices=True)
+
+        # discard points on edge
+        edge = edge_discard  # pixels
+        mask = (coords[:, 0] > edge) & \
+               (coords[:, 0] < im.shape[0] - edge) & \
+               (coords[:, 1] > edge) & \
+               (coords[:, 1] < im.shape[1] - edge)
+        coords = coords[mask].T
+        return h, coords
+
+    def dist2(self, x, c):
+        ndata, dimx = x.shape
+        ncenters, dimc = c.shape
+        assert (dimx == dimc), 'Data dimension does not match dimension of centers'
+
+        return (np.ones((ncenters, 1)) * np.sum((x**2).T, axis=0)).T + \
+                np.ones((   ndata, 1)) * np.sum((c**2).T, axis=0)    - \
+                2 * np.inner(x, c)
+
+    def getHarrisCorners(self, image):
+        h, (ys, xs) = self.get_harris_corners(image)
+        return h, np.array([xs, ys])
+    
+    def nonMaxSuppression(self, h, corners):
+        def findMaxRadius(h, corner):
+            radius = 15 # arbitrary starting point
+            low = 2
+            high = int(np.max(h.shape)*np.sqrt(2)/2 + 0.999)
+            while True:
+                rr, cc = circle(corner[1], corner[0], radius, shape=h.shape)
+                arg = np.argmax(h[rr,cc])
+                isMax = np.all((cc[arg], rr[arg]) == corner)
+                if not isMax:
+                    high = radius-1
+                else:
+                    low = radius
+                radius = int((high+low)/2.0 + 0.5)
+                if high == low:
+                    break
+            return radius
+        rads = [findMaxRadius(h, corner) for corner in corners.T]
+        self.numCorners = 500
+        inds = np.argsort(rads)[::-1][:self.numCorners]
+        return corners[:,inds]
+    
+    def extractFeatureDescriptors(self, image, corners):
+        fds = np.array([scipy.misc.imresize(image[y-20:y+20, x-20:x+20], (8,8)) for x,y in corners.T])
+        fds = fds.reshape((fds.shape[0], 64))
+        fds = (fds.T - np.mean(fds, axis=1)).T
+        std = np.std(fds, axis=1)
+        std = [1 if s == 0 else s for s in std]
+        fds = np.divide(fds.T, std).T
+        fds = fds.reshape((fds.shape[0], 8, 8))
+        return fds
+
+    def plotFeatureDescriptor(self, fd):
+        result = np.zeros((25*9, 20*9))
+        for i in range(25):
+            for j in range(20):
+                result[i*9:i*9+8, j*9:j*9+8] = fd[i*20 + j]
+        publishImage(result)
+        return
+    
+    def featureMatching(self, desc1, desc2):
+        pairs = [] # indices
+        dists = self.dist2(desc1.reshape(desc1.shape[0], 64), desc2.reshape(desc2.shape[0], 64))
+        inds = np.argsort(dists, axis=1)[:,:2]
+        for i, indices in enumerate(inds):
+            if dists[i, indices[0]]/dists[i, indices[1]] < 0.4:
+                pairs.append((i, indices[0]))
+        return np.array(pairs)
+
+    def computeMinOffset(self, pts1, pts2):
+        x1 = pts1[:,0]
+        x2 = pts2[:,0]
+        # solving quadratic for offset
+        a = pts1.shape[0]
+        b = 2 * np.sum(x2 - x1)
+        # c = np.sum((x1 - x2)**2)
+        offset_x = - b / (2*a)
+
+        y1 = pts1[:,1]
+        y2 = pts2[:,1]
+        a = pts1.shape[0]
+        b = 2 * np.sum(y2 - y1)
+        offset_y = - b / (2*a)
+
+        return offset_x, offset_y
+
+    # choose 4 random point pairs
+    # compute smallest indexing error for min x and y offset
+    # using that offset, compute error for all point indices
+    # return set of correspondences which has the smallest offset, and that offset
+    def estimateRANSAC(self, im1, im2, corners1, corners2, repeat=True):
+        # 4-pt RANSAC for correspondences
+        best = []
+        best_offset_x, best_offset_y = 0, 0
+        inds = np.array(range(corners1.shape[1]))
+        for _ in range(20000):
+            # choose 4 random pairs (corners are indices!)
+            np.random.shuffle(inds)
+            im1_pts = corners1[:,inds[:4]]
+            im2_pts = corners2[:,inds[:4]]
+            # compute offset
+            offset_x, offset_y = self.computeMinOffset(im1_pts.T, im2_pts.T)
+            offset_x, offset_y = np.round(offset_x).astype(int), np.round(offset_y).astype(int)
+            # compute inliers (differences of coordinate distances)
+            diff_x = corners2[0] + offset_x - corners1[0]
+            diff_y = corners2[1] + offset_y - corners1[1]
+            distances = diff_x**2 + diff_y**2
+            rr = np.where(distances < 4)
+            # if # inliers > then size of best, keep set of inliers
+            if len(rr) > len(best):
+                best = inds[rr]
+                best_offset_x, best_offset_y = offset_x, offset_y
+                break
+            if len(rr) == corners1.shape[1]:
+                break
+        
+        if len(best) <= 2 and repeat:
+            return self.estimateRANSAC(im1, im2, corners1, corners2, False)
+        if len(best) <= 2:
+            best_offset_x, best_offset_y = im1.shape[1], 0
+
+        print "\tFound " + str(len(best)) + " correspondences"
+        return best_offset_y, best_offset_x, corners1[:,best], corners2[:,best]
+
+    def getAutoCorrespondences(self, im1, im2):
+        # Detecting Harris Corners...
+        grayscale1 = rgb2gray(im1)
+        grayscale2 = rgb2gray(im2)
+        h1, corners1 = self.getHarrisCorners(grayscale1)
+        h2, corners2 = self.getHarrisCorners(grayscale2)
+        if self.plot:
+            publishImageScatter(im1, corners1)
+            publishImageScatter(im2, corners2)
+
+        # Running Adaptive Non-Maximal Suppression...
+        corners3 = self.nonMaxSuppression(h1, corners1)
+        corners4 = self.nonMaxSuppression(h2, corners2)
+        if self.plot:
+            publishImageScatter(im1, corners3)
+            publishImageScatter(im2, corners4)
+            publishImageScatter(im1, corners1, corners3)
+            publishImageScatter(im2, corners2, corners4)
+
+        # Extracting Feature Descriptors...
+        fd1 = self.extractFeatureDescriptors(grayscale1, corners3)
+        fd2 = self.extractFeatureDescriptors(grayscale2, corners4)
+        if self.plot:
+            self.plotFeatureDescriptor(fd1)
+            self.plotFeatureDescriptor(fd2)
+
+        # Running Feature Matching...
+        pairs = self.featureMatching(fd1, fd2)
+        if len(pairs) == 0:
+            print "No matching features found!"
+            sys.exit(1)
+        corners5 = corners3[:, pairs[:,0]]
+        corners6 = corners4[:, pairs[:,1]]
+        if self.plot:
+            publishImageScatter(im1, corners5)
+            publishImageScatter(im2, corners6)
+            publishImageScatter(im1, corners1, corners3, corners5)
+            publishImageScatter(im2, corners2, corners4, corners6)
+
+        # Estimating alignment using RANSAC...
+        offset_x, offset_y, corners7, corners8 = self.estimateRANSAC(im1, im2, corners5, corners6)
+        if self.plot:
+            publishImageScatter(im1, corners7)
+            publishImageScatter(im2, corners8)
+            publishImageScatter(im1, corners1, corners3, corners5, corners7)
+            publishImageScatter(im2, corners2, corners4, corners6, corners8)
+
+        correspondences = np.array([corners7.T, corners8.T])
+        self.plot = False
+        return offset_x, offset_y, correspondences
+
+    def getFeaturesAndCombine(self, im1, im2):
+        # x goes up to down, y goes left to right
+        offset_x, offset_y, correspondences = self.getAutoCorrespondences(im1, im2)
+        panorama = []
+        if offset_x >= 0 and offset_y >= 0:
+            dim_x = np.max((im1.shape[0], im2.shape[0] + offset_x))
+            dim_y = np.max((im1.shape[1], im2.shape[1] + offset_y))
+            panorama = np.zeros((dim_x, dim_y, im1.shape[2]))
+            panorama[:im1.shape[0], :im1.shape[1]] = im1
+            panorama[offset_x:offset_x+im2.shape[0], offset_y:offset_y+im2.shape[1]] = im2
+        elif offset_x >= 0 and offset_y < 0:
+            dim_x = np.max((im1.shape[0], im2.shape[0] + offset_x))
+            dim_y = np.max((im1.shape[1] - offset_y, im2.shape[1]))
+            panorama = np.zeros((dim_x, dim_y, im1.shape[2]))
+            panorama[:im1.shape[0], -offset_y:im1.shape[1]-offset_y] = im1
+            panorama[offset_x:offset_x+im2.shape[0], :im2.shape[1]] = im2
+        elif offset_x < 0 and offset_y >= 0:
+            dim_x = np.max((im1.shape[0] - offset_x, im2.shape[0]))
+            dim_y = np.max((im1.shape[1], im2.shape[1] + offset_y))
+            panorama = np.zeros((dim_x, dim_y, im1.shape[2]))
+            panorama[-offset_x:im1.shape[0]-offset_x, :im1.shape[1]] = im1
+            panorama[:im2.shape[0], offset_y:offset_y+im2.shape[1]] = im2
+        elif offset_x < 0 and offset_y < 0:
+            dim_x = np.max((im1.shape[0] - offset_x, im2.shape[0]))
+            dim_y = np.max((im1.shape[1] - offset_y, im2.shape[1]))
+            panorama = np.zeros((dim_x, dim_y, im1.shape[2]))
+            panorama[-offset_x:im1.shape[0]-offset_x, -offset_y:im1.shape[1]-offset_y] = im1
+            panorama[:im2.shape[0], :im2.shape[1]] = im2
+        return panorama
+
+
+
 
 # Main
 if __name__ == "__main__":
