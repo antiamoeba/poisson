@@ -1,5 +1,10 @@
 Focal length = 29.0 mm
 FOV = 7.8 degrees
+sensor = 14.9 mm x 22.3 mm
+
 Focal in pixel = (image_width_in_pixels * 0.5) / tan(FOV * 0.5 * PI/180)
 	= (900 * 0.5) / tan( 7.8 * 0.5 * PI / 180)
 	= 6600.838
+
+Focal in pixel = (focal length in mm) * (image height in px) / (sensor height in mm)
+	= 29.0 * 600 / 14.9
