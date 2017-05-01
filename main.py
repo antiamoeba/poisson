@@ -601,16 +601,21 @@ class FeatureDetection:
     # compute smallest indexing error for min x and y offset
     # using that offset, compute error for all point indices
     # return set of correspondences which has the smallest offset, and that offset
-    def estimateRANSAC(self, im1, im2, corners1, corners2, repeat=True):
+    def estimateRANSAC(self, im1, im2, corners1, corners2, repeat=100):
         # 4-pt RANSAC for correspondences
         best = []
         best_offset_x, best_offset_y = 0, 0
         inds = np.array(range(corners1.shape[1]))
-        for _ in range(20000):
+        for _ in range(100000):
             # choose 4 random pairs (corners are indices!)
-            np.random.shuffle(inds)
-            im1_pts = corners1[:,inds[:4]]
-            im2_pts = corners2[:,inds[:4]]
+                # Favors right-most features more
+            sorted_indices = np.argsort(corners1[0])[::-1]
+            sorted_indices = np.log(sorted_indices + 2)
+            random_indices = np.random.choice(inds, size=4, replace=False, p=sorted_indices/np.sum(sorted_indices))
+                # Favors all features equally:
+            # np.random.shuffle(inds)
+            im1_pts = corners1[:,random_indices[:4]]
+            im2_pts = corners2[:,random_indices[:4]]
             # compute offset
             offset_x, offset_y = self.computeMinOffset(im1_pts.T, im2_pts.T)
             offset_x, offset_y = np.round(offset_x).astype(int), np.round(offset_y).astype(int)
@@ -627,10 +632,16 @@ class FeatureDetection:
             if len(rr) == corners1.shape[1]:
                 break
         
-        if len(best) <= 2 and repeat:
-            return self.estimateRANSAC(im1, im2, corners1, corners2, False)
-        if len(best) <= 2:
-            best_offset_x, best_offset_y = im1.shape[1], 0
+        if len(best) <= 2 and repeat > 0:
+            return self.estimateRANSAC(im1, im2, corners1, corners2, repeat - 1)
+        elif len(best) <= 2:
+            if corners1.shape[1] > 2 and corners2.shape[1] > 2:
+                offset_x, offset_y = self.computeMinOffset(corners1.T, corners2.T)
+                offset_x, offset_y = np.round(offset_x).astype(int), np.round(offset_y).astype(int)
+                print "\tUsing all points for correspondences"
+                return offset_x, offset_y, corners1, corners2
+            else:
+                best_offset_x, best_offset_y = im1.shape[1], 0
 
         print "\tFound " + str(len(best)) + " correspondences"
         return best_offset_y, best_offset_x, corners1[:,best], corners2[:,best]
