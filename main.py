@@ -337,12 +337,12 @@ class Panorama:
         panorama = []
         image = readimage(img_names[0])
         mapped = self.warpImage(image, focal_length, mapping).astype(float)
-        #mapped = misc.imresize(mapped, 1).astype(float)/255
+        mapped = misc.imresize(mapped, 0.25).astype(float)/255
         panorama = mapped
         for img_name in img_names[1:]:
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)
-            #mapped = misc.imresize(mapped, 0.25).astype(float)/255
+            mapped = misc.imresize(mapped, 0.25).astype(float)/255
             if align_method == "convolve":
                 print "Convolving now: "+time.ctime()  # TODO: Remove after tested
                 h, shift, simple_panorama = self.convolve(panorama, mapped, method="pyramid")
@@ -365,7 +365,8 @@ class Panorama:
                 print "Panorama:" + str(panorama.shape)
                 print "Done convolving: "+time.ctime()  # TODO: Remove after tested
             elif align_method == "features":
-                panorama = feature_detector.getFeaturesAndCombine(panorama, mapped)
+                _, _, panorama = feature_detector.getFeaturesAndCombine(panorama, mapped)
+        panorama = feature_detector.cropPanoramaToWrap(panorama)
         publishImage(panorama)
         return panorama
 
@@ -752,7 +753,20 @@ class FeatureDetection:
             panorama = np.zeros((dim_x, dim_y, im1.shape[2]))
             panorama[-offset_x:im1.shape[0]-offset_x, -offset_y:im1.shape[1]-offset_y] = im1
             panorama[:im2.shape[0], :im2.shape[1]] = im2
-        return panorama
+        return offset_x, offset_y, panorama
+
+    def cropPanoramaToWrap(self, panorama):
+        dim_x, dim_y = panorama.shape[:2]
+        offset_x, offset_y, _ = self.getFeaturesAndCombine(panorama[:,dim_y-200:], panorama[:,:200])
+        panorama2 = panorama[:,:offset_y + dim_y - 200]
+        return panorama2
+        # publishImage(panorama2)
+        # panorama3 = np.copy(panorama2)
+        # halfway = int(panorama2.shape[1]/2)
+        # panorama3[:,:halfway] = panorama2[:,-halfway:]
+        # panorama3[:,halfway:] = panorama2[:,:-halfway]
+        # publishImage(panorama3)
+        # return panorama3
 
 
 
