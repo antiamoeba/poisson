@@ -16,7 +16,7 @@ from skimage.draw import circle
 from skimage.feature import corner_harris, peak_local_max
 from skimage import img_as_float
 import pyamg
-from cv2 import resize, Laplacian
+# from cv2 import resize, Laplacian
 
 # Parameters and defaults
 image_num = 1
@@ -339,6 +339,14 @@ class Panorama:
                     min_h = drift
         return min_h, min_shift
     
+    def calcGuassianPyramid(self, img, max_levels=10, sigma=1):
+        curr_img = img
+        pyramid = [img]
+        for i in range(max_levels - 1):
+            curr_img = img_as_float(gaussian_filter(curr_img, sigma))
+            pyramid.insert(0, curr_img)
+        return pyramid
+
     def calcLaplacianPyramid(self, img, max_levels=10, sigma=1):
         curr_img = img
         pyramid = []
@@ -349,6 +357,7 @@ class Panorama:
             curr_img = n_img
         pyramid.insert(0, curr_img)
         return pyramid
+
     def pyramid_blend(self, src, dest, h, shift, mask_type="flat", levels=10):
         src_pyramid = self.calcLaplacianPyramid(src, max_levels=levels)
         dest_pyramid = self.calcLaplacianPyramid(dest, max_levels=levels)
@@ -367,10 +376,12 @@ class Panorama:
             half_y = int((overlap_br[0] - overlap_tl[0])/2)
             half_x = int((overlap_br[1] - overlap_tl[1])/2)
             mask = np.ones(src.shape)
-            mask[:,:overlap_tl[1] + half_x] = 0.15
-            mask[:,overlap_tl[1] + half_x:overlap_br[1]] = 0.85
-        for src_img, dest_img in zip(src_pyramid, dest_pyramid):
-            total_img = mask_compose(src_img, dest_img, mask, shift, h)
+            mask[:,:overlap_tl[1] + half_x] = 0.0
+            # mask[:,overlap_tl[1] + half_x:overlap_br[1]] = 0.85
+        mask_pyramid = self.calcGuassianPyramid(mask, max_levels=levels)
+        
+        for src_img, dest_img, mask_img in zip(src_pyramid, dest_pyramid, mask_pyramid):
+            total_img = mask_compose(src_img, dest_img, mask_img, shift, h)
             total_pyramid.append(total_img)
         
         final_img = total_pyramid[0]
@@ -888,6 +899,6 @@ if __name__ == "__main__":
     ##C Code to test pyramid blending
     source = readimage("data/o-brien.jpg")[:,:,0]
     dest = readimage("data/fishingscene.jpeg")[:,:,0]
-    output = Panorama().pyramid_blend(source, dest, 0, dest.shape[1]-int(source.shape[1]/2), levels=10)
-    displayImage(output)
+    output = Panorama().pyramid_blend(source, dest, 0, dest.shape[1]-int(source.shape[1]/2), levels=100)
+    publishImage(output)
 
