@@ -6,7 +6,7 @@ import sys, os, time, glob
 import scipy
 from scipy import misc
 from scipy.interpolate import RegularGridInterpolator as RGI
-from scipy.ndimage.filters import gaussian_filter, sobel
+from scipy.ndimage.filters import gaussian_filter, sobel, laplace
 from scipy.ndimage.morphology import binary_erosion
 from scipy.signal import fftconvolve
 from scipy.sparse.linalg import cg
@@ -16,7 +16,7 @@ from skimage.draw import circle
 from skimage.feature import corner_harris, peak_local_max
 from skimage import img_as_float
 import pyamg
-from cv2 import resize
+from cv2 import resize, Laplacian
 
 # Parameters and defaults
 image_num = 1
@@ -87,7 +87,7 @@ def displayImage(image, title=None):
 def rgb2gray(rgb):
     return np.dot(rgb[...,:3], [0.299, 0.587, 0.114])
 
-def compose(source, dest, shift, h):
+def compose(source, dest, shift, h, start=False):
     #bounding box
     top_left_x = min(0, shift)
     top_left_y = min(0, h)
@@ -109,7 +109,10 @@ def compose(source, dest, shift, h):
     source_start_x = max(0, shift)
     source_start_y = max(0, h)
     total_img[source_start_y:source_start_y + source.shape[0], source_start_x:source_start_x + source.shape[1]] = source
-    return total_img
+    if start == True:
+        return total_img, source_start_y, source_start_x
+    else:
+        return total_img
 def mask_compose(source, dest, mask, shift, h, start=False):
     #bounding box
     top_left_x = min(0, shift)
@@ -131,7 +134,7 @@ def mask_compose(source, dest, mask, shift, h, start=False):
     #insert source image with mask
     source_start_x = max(0, shift)
     source_start_y = max(0, h)
-    total_img[source_start_y:source_start_y + source.shape[0], source_start_x:source_start_x + source.shape[1]] *= np.logical_not(mask).astype(int)
+    total_img[source_start_y:source_start_y + source.shape[0], source_start_x:source_start_x + source.shape[1]] *= 1 - mask
     total_img[source_start_y:source_start_y + source.shape[0], source_start_x:source_start_x + source.shape[1]] += np.multiply(mask, source)
     if start == True:
         return total_img, source_start_y, source_start_x
@@ -335,6 +338,45 @@ class Panorama:
                     min_shift = start
                     min_h = drift
         return min_h, min_shift
+    
+    def calcLaplacianPyramid(self, img, max_levels=10, sigma=1):
+        curr_img = img
+        pyramid = []
+        for i in range(max_levels - 1):
+            n_img = img_as_float(gaussian_filter(curr_img, sigma))
+            curr_laplace = curr_img - n_img
+            pyramid.insert(0, curr_laplace)
+            curr_img = n_img
+        pyramid.insert(0, curr_img)
+        return pyramid
+    def pyramid_blend(self, src, dest, h, shift, mask_type="flat", levels=10):
+        src_pyramid = self.calcLaplacianPyramid(src, max_levels=levels)
+        dest_pyramid = self.calcLaplacianPyramid(dest, max_levels=levels)
+        total_pyramid = []
+        
+        #calculate overlap area in src coords
+        src_br = (src.shape[0], src.shape[1])
+        dest_br = (dest.shape[0] - h, dest.shape[1] - shift)
+        dest_tl = (-h, -shift)
+        overlap_br = (min(src_br[0], dest_br[0]), min(src_br[1], dest_br[1]))
+        overlap_tl = (max(dest_tl[0], 0), max(dest_tl[1], 0))
+
+        #build mask
+        mask = None
+        if mask_type == "flat":
+            half_y = int((overlap_br[0] - overlap_tl[0])/2)
+            half_x = int((overlap_br[1] - overlap_tl[1])/2)
+            mask = np.ones(src.shape)
+            mask[:,:overlap_tl[1] + half_x] = 0.15
+            mask[:,overlap_tl[1] + half_x:overlap_br[1]] = 0.85
+        for src_img, dest_img in zip(src_pyramid, dest_pyramid):
+            total_img = mask_compose(src_img, dest_img, mask, shift, h)
+            total_pyramid.append(total_img)
+        
+        final_img = total_pyramid[0]
+        for i in range(1, len(total_pyramid)):
+            final_img += total_pyramid[i]
+        return final_img
         
     def poisson_pyramid(self, src, dest, h, shift, max_levels=2):
         mask = np.ones((src.shape[0], src.shape[1]))
@@ -816,15 +858,8 @@ if __name__ == "__main__":
     output_dir = 'output'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    Panorama().runMain()
-    print ""
-    ### Code to test convolve(): ###
-    #source = readimage("data/o-brienleft.jpg")
-    #dest = readimage("data/o-brienright.jpg")
-    #panorama = Panorama()
-    #total_img = panorama.convolve(source, dest, method="pyramid")
-    #print np.max(total_img)
-    #displayImage(total_img)
+    #Panorama().runMain()
+    #print ""
     ### Code to test Poisson(): ###
     #print "Poisson now: "+time.ctime()  # TODO: Remove after tested
     #dest = readimage("data/fishingscene.jpeg")
@@ -837,5 +872,9 @@ if __name__ == "__main__":
     #output_img = Panorama().poisson_pyramid(source, dest, quarter_y, quarter_x)
     #displayImage(output_img)
     #print "Done poisson: "+time.ctime()  # TODO: Remove after tested
-
+    ##C Code to test pyramid blending
+    source = readimage("data/o-brien.jpg")[:,:,0]
+    dest = readimage("data/fishingscene.jpeg")[:,:,0]
+    output = Panorama().pyramid_blend(source, dest, 0, dest.shape[1]-int(source.shape[1]/2), levels=10)
+    displayImage(output)
 
