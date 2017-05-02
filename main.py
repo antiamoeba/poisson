@@ -26,10 +26,10 @@ image_num = 1
 def readimage(name):
     image = misc.imread(name)
     if name[-4:] == ".jpg":
-        image = image.astype(float) / 255.0
+        image = image
     elif name[-4:] == ".png":
         image = image[:,:,:3]
-    return image
+    return img_as_float(image)
 
 def publishImage(image, title=None, output_directory=True):
     if len(image.shape) == 2:
@@ -110,6 +110,33 @@ def compose(source, dest, shift, h):
     source_start_y = max(0, h)
     total_img[source_start_y:source_start_y + source.shape[0], source_start_x:source_start_x + source.shape[1]] = source
     return total_img
+def mask_compose(source, dest, mask, shift, h, start=False):
+    #bounding box
+    top_left_x = min(0, shift)
+    top_left_y = min(0, h)
+    bottom_right_x = max(dest.shape[1], shift + source.shape[1])
+    bottom_right_y = max(dest.shape[0], h + source.shape[0])
+
+    total_img = None
+    if source.ndim > 2:
+        total_img = np.zeros((bottom_right_y - top_left_y, bottom_right_x - top_left_x, source.shape[2]))
+    else:
+        total_img = np.zeros((bottom_right_y - top_left_y, bottom_right_x - top_left_x))
+
+    #insert destination image
+    dest_start_x = max(0, -shift)
+    dest_start_y = max(0, -h)
+    total_img[dest_start_y:dest_start_y + dest.shape[0], dest_start_x:dest_start_x + dest.shape[1]] = dest
+
+    #insert source image with mask
+    source_start_x = max(0, shift)
+    source_start_y = max(0, h)
+    total_img[source_start_y:source_start_y + source.shape[0], source_start_x:source_start_x + source.shape[1]] *= np.logical_not(mask).astype(int)
+    total_img[source_start_y:source_start_y + source.shape[0], source_start_x:source_start_x + source.shape[1]] += np.multiply(mask, source)
+    if start == True:
+        return total_img, source_start_y, source_start_x
+    else:
+        return total_img
 
 def calcImagePyramid(img, threshold=30, levels=None, resize="nearest"):
     imgs = []
@@ -123,7 +150,7 @@ def calcImagePyramid(img, threshold=30, levels=None, resize="nearest"):
         iterations = 1
         while iterations < levels:
             if np.all(current == 1):
-                current = np.ones((int(current.shape[0]/2),int(current.shape[0]/2)))
+                current = np.ones((int(current.shape[0]/2),int(current.shape[1]/2)))
             else:
                 current = img_as_float(misc.imresize(current, 0.5, interp=resize))
             imgs.insert(0, current)
@@ -309,35 +336,49 @@ class Panorama:
                     min_h = drift
         return min_h, min_shift
         
-    def poisson_pyramid(self, src, dest, h, shift):
+    def poisson_pyramid(self, src, dest, h, shift, max_levels=2):
         mask = np.ones((src.shape[0], src.shape[1]))
-        mask_pyramid = calcImagePyramid(mask, levels=3)
+        mask_pyramid = calcImagePyramid(mask, levels=max_levels)
         poisson = PoissonSolver()
+        colors = []
         for i in range(3):
             src_curr = src[:,:,i]
             dest_curr = dest[:,:,i]
-            src_pyramid = calcImagePyramid(src_curr, levels=3)
-            dest_pyramid = calcImagePyramid(dest_curr, levels=3)
-            prev_level = poisson.poisson(src_pyramid[0], dest_pyramid[0], mask_pyramid[0], (int(h/4), int(shift/4)), poisson.seamless_gradient)
-            prev_level = resize(prev_level, None, fx=2, fy=2)
-            for j in range(1, 3):
-                #erode mask
+            src_pyramid = calcImagePyramid(src_curr, levels=max_levels)
+            dest_pyramid = calcImagePyramid(dest_curr, levels=max_levels)
+            prev_level = poisson.poisson(src_pyramid[0], dest_pyramid[0], mask_pyramid[0], (int(h/(2 ** (max_levels - 1))), int(shift/(2 ** (max_levels - 1)))), poisson.seamless_gradient, return_type="region")
+            total_img = None
+            for j in range(1, max_levels):
+                h_offset = int(h/(2**((max_levels - 1)-j)))
+                shift_offset = int(shift/(2**((max_levels - 1)-j)))
                 mask_j = mask_pyramid[j]
                 mask_j[mask_j >= 0.5] = 1
                 mask_j[mask_j < 0.5] = 0
+                prev_level = resize(prev_level, (mask_j.shape[1], mask_j.shape[0]))
+                old_total, h_n, shift_n = mask_compose(prev_level, dest_pyramid[j], mask_j, shift_offset, h_offset, start=True)
+                #erode mask
                 slices = []
                 curr_eroded = mask_j.astype(int)
                 flag = False
                 while not flag:
-                    n_eroded = binary_erosion(curr_eroded, structure=np.ones((10, 10))).astype(int)
+                    n_eroded = binary_erosion(curr_eroded, structure=np.ones((10 * j, 10 * j))).astype(int)
                     diff = curr_eroded - n_eroded
                     slices.append(diff)
                     curr_eroded = n_eroded
                     if np.count_nonzero(curr_eroded) == 0:
                         flag = True
+                output_region = np.zeros(mask_j.shape)
                 for slice_mask in slices:
-                    slice_total = poisson.poisson(src_pyramid[j], prev_level, mask_pyramid[j], (int(h/(2**(2-j))), int(shift/(2**(2-j)))), poisson.seamless_gradient)
-                    
+                    slice_points = poisson.poisson(src_pyramid[j], old_total, slice_mask, (h_n, shift_n), poisson.seamless_gradient, return_type="region")
+                    output_region += slice_points
+                prev_level = output_region
+                total_img = mask_compose(output_region, dest_pyramid[j], mask_j, shift_offset, h_offset)
+            colors.append(total_img)
+        output_image = np.zeros((colors[0].shape[0], colors[0].shape[1], 3))
+        for i in range(3):
+            output_image[:,:,i] = colors[i]
+        #displayImage(output_image)
+        return output_image
         
     # focal_length in pixels
     def runAlgorithm(self, folder_name, focal_length, mapping, align_method="convolve"):
@@ -346,40 +387,33 @@ class Panorama:
         feature_detector = FeatureDetection()
         panorama = []
         image = readimage(img_names[0])
-        mapped = self.warpImage(image, focal_length, mapping).astype(float)
-        mapped = misc.imresize(mapped, 0.25).astype(float)/255
+        mapped = self.warpImage(image, focal_length, mapping)
+        mapped = img_as_float(misc.imresize(mapped, 0.25))
         panorama = mapped
+        imgs = []
+        start_panorama = panorama
+        offsets = []
         for img_name in img_names[1:]:
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)
-            mapped = misc.imresize(mapped, 0.25).astype(float)/255
+            mapped = img_as_float(misc.imresize(mapped, 0.25))
+            imgs.append(mapped)
             if align_method == "convolve":
                 print "Convolving now: "+time.ctime()  # TODO: Remove after tested
-                h, shift, simple_panorama = self.convolve(panorama, mapped, method="pyramid")
-                self.poisson_pyramid(mapped, panorama, h, shift)
-                #panorama = simple_panorama
-                print "Panorama:" + str(panorama.shape)
+                h, shift, panorama = self.convolve(panorama, mapped, method="pyramid")
+                offsets.append((h, shift))
                 print "Done convolving: "+time.ctime()  # TODO: Remove after tested
             elif align_method == "features":
                 h, shift, correspondences = feature_detector.getAutoCorrespondences(panorama, mapped)
-                mask = np.ones((mapped.shape[0], mapped.shape[1]))
-                #print "Poisson:"
-                #red
-                print str(h) + ":" + str(shift)
-                red = poisson.poisson(mapped[:,:,0], panorama[:,:,0], mask, (h, shift), poisson.seamless_gradient)
-                #displayImage(red)
-                #green
-                green = poisson.poisson(mapped[:,:,1], panorama[:,:,1], mask, (h, shift), poisson.seamless_gradient)
-                #blue
-                blue = poisson.poisson(mapped[:,:,2], panorama[:,:,2], mask, (h, shift), poisson.seamless_gradient)
-
-                panorama = np.zeros((red.shape[0], red.shape[1], 3))
-                panorama[:,:,0] = red
-                panorama[:,:,1] = green
-                panorama[:,:,2] = blue
-                print "Panorama:" + str(panorama.shape)
+                panorama = compose(mapped, panorama, shift, h)
+                offsets.append((h, shift))
                 print "Done convolving: "+time.ctime()  # TODO: Remove after tested
-
+            else:
+                raise ValueError("Align method not recognized.")
+        #Blend
+        panorama = start_panorama
+        for img, offset in zip(imgs, offsets):
+            panorama = self.poisson_pyramid(img, panorama, offset[0], offset[1])
         publishImage(panorama)
         return panorama
 
@@ -389,7 +423,7 @@ class Panorama:
         # self.runAlgorithm("vlsb", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features")
-        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "convolve")
+        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features")
         
         # print "\nRunning Spherical Panorama Algorithm:"
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
@@ -429,14 +463,22 @@ class PoissonSolver:
             return dest_gradient
         else:
             return src_gradient
-    
-    def poisson(self, src, dst, mask, point_tl, guidance_func):
+    def poisson(self, src, dst, mask, point_tl, guidance_func, return_type="composed"):
+        if mask==None:
+            mask = np.ones(src.shape)
         region = mask.shape
         num_vertices = np.count_nonzero(mask)
 
         A = np.zeros((num_vertices, num_vertices))
         b = np.zeros(num_vertices)
         i = -1
+        vertices = dict()
+        #Build hashmap
+        for y in range(region[0]):
+            for x in range(region[1]):
+                if mask[y, x] > 0.5:
+                    i += 1
+                    vertices[(y, x)] = i
         #Build matrix
         for y in range(region[0]):
             for x in range(region[1]):
@@ -444,12 +486,14 @@ class PoissonSolver:
                     x_dst = x + point_tl[1]
                     y_dst = y + point_tl[0]           
                     #index
-                    i += 1
+                    i = vertices[(y, x)]
                     counter = 0
 
+                    #right
                     b[i] += guidance_func(src, dst, (y, x), (y, x+1), point_tl)
                     if x + 1 < region[1] and mask[y, x + 1] > 0.5:
-                        A[i,i + 1] = -1
+                        right = vertices[(y, x+1)]
+                        A[i,right] = -1
                         counter += 1
                     else:
                         y_neighbor = y + point_tl[0]
@@ -457,16 +501,13 @@ class PoissonSolver:
                         if x_neighbor < dst.shape[1] and x_neighbor >= 0 and y_neighbor < dst.shape[0] and y_neighbor >= 0:
                             counter += 1
                             b[i] += dst[y_neighbor, x_neighbor]
-                        elif x + 1 < region[1]:
-                            counter += 1
-                            b[i] += src[y, x+1]
-                        else:
-                            counter += 1
-                            b[i] += src[y, x]
-
+                        
+                    
+                    #left
                     b[i] += guidance_func(src, dst, (y, x), (y, x-1), point_tl)
                     if x - 1 >= 0 and mask[y, x - 1] > 0.5:
-                        A[i,i - 1] = -1
+                        left = vertices[(y, x-1)]
+                        A[i,left] = -1
                         counter += 1
                     else:
                         y_neighbor = y + point_tl[0]
@@ -474,16 +515,16 @@ class PoissonSolver:
                         if x_neighbor < dst.shape[1] and x_neighbor >= 0 and y_neighbor < dst.shape[0] and y_neighbor >= 0:
                             counter += 1
                             b[i] += dst[y_neighbor, x_neighbor]
-                        elif x - 1 >= 0:
+                        elif x_dst < dst.shape[1] and x_dst >= 0 and y_dst < dst.shape[0] and y_dst >= 0:
                             counter += 1
-                            b[i] += src[y, x-1]
-                        else:
-                            counter += 1
-                            b[i] += src[y, x]
-
+                            b[i] += dst[y_dst, x_dst]
+                       
+                    
+                    #bottom
                     b[i] += guidance_func(src, dst, (y, x), (y + 1, x), point_tl)
                     if y + 1 < region[0] and mask[y + 1, x] > 0.5:
-                        A[i, i + region[1]] = -1
+                        bottom = vertices[(y+1, x)]
+                        A[i, bottom] = -1
                         counter += 1
                     else:
                         y_neighbor = y + 1 + point_tl[0]
@@ -491,16 +532,14 @@ class PoissonSolver:
                         if x_neighbor < dst.shape[1] and x_neighbor >= 0 and y_neighbor < dst.shape[0] and y_neighbor >= 0:
                             counter += 1
                             b[i] += dst[y_neighbor, x_neighbor]
-                        elif y + 1 < region[0]:
-                            counter += 1
-                            b[i] += src[y + 1, x]
-                        else:
-                            counter += 1
-                            b[i] += src[y, x]
+                        
+                        
                     
+                    #top
                     b[i] += guidance_func(src, dst, (y, x), (y - 1, x), point_tl)
                     if y - 1 >= 0 and mask[y - 1, x] > 0.5:
-                        A[i, i - region[1]] = -1
+                        top = vertices[(y-1, x)]
+                        A[i, top] = -1
                         counter += 1
                     else:
                         y_neighbor = y - 1 + point_tl[0]
@@ -508,12 +547,8 @@ class PoissonSolver:
                         if x_neighbor < dst.shape[1] and x_neighbor >= 0 and y_neighbor < dst.shape[0] and y_neighbor >= 0:
                             counter += 1
                             b[i] += dst[y_neighbor, x_neighbor]
-                        elif y - 1 >= 0:
-                            counter += 1
-                            b[i] += src[y-1, x]
-                        else:
-                            counter += 1
-                            b[i] += src[y, x]
+                        
+                        
                     A[i,i] = counter
         A = sparse.csr_matrix(A)
         #c_factors = cho_factor(A)
@@ -521,6 +556,8 @@ class PoissonSolver:
         #points = cg(A, b)[0]
         #points = self.gauss_seidel(A, b, 5000)
         points = pyamg.solve(A, b, verb=False)
+        if return_type == "raw":
+            return points
         img = np.zeros(region)
         i = -1
         for y in range(region[0]):
@@ -534,7 +571,10 @@ class PoissonSolver:
                         img[y, x] = 0
                     else:
                         img[y, x] = points[i]
-        return compose(img, dst, point_tl[1], point_tl[0])
+        if return_type == "composed":
+            return mask_compose(img, dst, mask, point_tl[1], point_tl[0])
+        if return_type == "region":
+            return img
 
 
 
@@ -787,17 +827,14 @@ if __name__ == "__main__":
     #displayImage(total_img)
     ### Code to test Poisson(): ###
     #print "Poisson now: "+time.ctime()  # TODO: Remove after tested
-    #dest = rgb2gray(readimage("data/fishingscene.jpeg"))
-    #source = rgb2gray(readimage("data/o-brien.jpg"))
-    #dest = misc.imresize(dest, 0.5)
-    #source = misc.imresize(source, 0.5)
-    #quarter_x = int(231/2)
+    #dest = readimage("data/fishingscene.jpeg")
+    #source = readimage("data/o-brien.jpg")
+    #quarter_x = -50
     #quarter_y = 0
     #mask = np.ones(source.shape)
     #poisson = PoissonSolver()
-    #dest = dest.astype(float)/255
-    #source= source.astype(float)
     #output_img = poisson.poisson(source, dest, mask, (quarter_y, quarter_x), poisson.seamless_gradient)
+    #output_img = Panorama().poisson_pyramid(source, dest, quarter_y, quarter_x)
     #displayImage(output_img)
     #print "Done poisson: "+time.ctime()  # TODO: Remove after tested
 
