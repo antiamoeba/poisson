@@ -160,7 +160,7 @@ def calcImagePyramid(img, threshold=30, levels=None, resize="nearest"):
             iterations += 1
     return imgs
     
-cone_height = 4
+cone_height = 0.5
 class Panorama:
     def __init__(self):
         print "\nCS 284B Final Project: Panoramas"
@@ -443,6 +443,7 @@ class Panorama:
                         slice_points = poisson.poisson(src_pyramid[j], old_total, slice_mask, (h_n, shift_n), poisson.seamless_gradient, return_type="region")
                     elif method == "mixed":
                         slice_points = poisson.poisson(src_pyramid[j], old_total, slice_mask, (h_n, shift_n), poisson.mixed_gradient, return_type="region")
+                    old_total = mask_compose(slice_points, old_total, slice_mask, shift_n, h_n)
                     output_region += slice_points
                 prev_level = output_region
                 total_img = mask_compose(output_region, dest_pyramid[j], mask_j, shift_offset, h_offset)
@@ -454,7 +455,7 @@ class Panorama:
         return output_image
         
     # focal_length in pixels
-    def runAlgorithm(self, folder_name, focal_length, mapping, align_method="convolve", blend_method="poisson"):
+    def runAlgorithm(self, folder_name, focal_length, mapping, align_method="convolve", blend_method="poisson", wrap=True):
         img_names = glob.glob("data/" + folder_name + "/*")[::-1]
         poisson = PoissonSolver()
         feature_detector = FeatureDetection()
@@ -498,6 +499,8 @@ class Panorama:
         for img, offset in zip(imgs, offsets):
             if blend_method == "poisson":
                 panorama = self.poisson_pyramid(img, panorama, offset[0], offset[1])
+            elif blend_method == "mixed":
+                panorama = self.poisson_pyramid(img, panorama, offset[0], offset[1], method="mixed")
             elif blend_method == "pyramid":
                 panorama = self.pyramid_blend(img, panorama, offset[0], offset[1], levels=100)
             else:
@@ -507,22 +510,27 @@ class Panorama:
             end_one = start_one + img.shape[0]
             end_two = start_two + panorama.shape[0]
             panorama = panorama[max(start_one, start_two):min(end_one, end_two)]
+        print "Done blending"
         publishImage(panorama)
-        panorama = panorama[:,:cropIndex]
-        
-        # Blending ends of the panorama
-        publishImage(panorama)
-        
-        left_end = panorama[:,:200]
-        right_end = panorama[:,-200:]
-        if blend_method == "poisson":
-            ends = self.poisson_pyramid(right_end, left_end, 0, right_end.shape[1])
-        elif blend_method == "pyramid":
-            ends = self.pyramid_blend(right_end, left_end, 0, right_end.shape[1], levels=100)
-        panorama[:,:200] = left_end = ends[:,:200]
-        panorama[:,-200:] = right_end = ends[:,-200:]
+        if wrap == True:
+            panorama = panorama[:,:cropIndex]
+            
+            # Blending ends of the panorama
+            publishImage(panorama)
+            
+            print "Wrap around"
+            left_end = panorama[:,:200]
+            right_end = panorama[:,-200:]
+            if blend_method == "poisson":
+                ends = self.poisson_pyramid(right_end, left_end, 0, right_end.shape[1], method="seamless")
+            elif blend_method == "mixed":
+                ends = self.poisson_pyramid(right_end, left_end, 0, right_end.shape[1], method="mixed")
+            elif blend_method == "pyramid":
+                ends = self.pyramid_blend(right_end, left_end, 0, right_end.shape[1], levels=100)
+            panorama[:,:200] = left_end = ends[:,:200]
+            panorama[:,-200:] = right_end = ends[:,-200:]
 
-        publishImage(panorama)
+            publishImage(panorama)
         return panorama
 
     def runMain(self):
@@ -531,8 +539,8 @@ class Panorama:
         # self.runAlgorithm("vlsb", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features")
-        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "pyramid")
-        # self.runAlgorithm("vlsb", 1167, self.coneMappingIndices, "features", "pyramid")
+        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "poisson")
+        #self.runAlgorithm("distinct", 1167, self.coneMappingIndices, "convolve", "mixed", wrap=False)
 
         # print "\nRunning Spherical Panorama Algorithm:"
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
@@ -655,12 +663,14 @@ class PoissonSolver:
                         else:
                             b[i] += src[y, x]
                     A[i,i] = 4
-        A = sparse.csr_matrix(A)
+        A_square = np.dot(A.T, A)
+        A_square = sparse.csr_matrix(A_square)
+        b_square = np.dot(A.T, b)
         #c_factors = cho_factor(A)
         #points = cho_solve(c_factors, b)
         #points = cg(A, b)[0]
         #points = self.gauss_seidel(A, b, 5000)
-        points = pyamg.solve(A, b, verb=False)
+        points = pyamg.solve(A_square, b_square, verb=False)
         if return_type == "raw":
             return points
         img = np.zeros(region)
