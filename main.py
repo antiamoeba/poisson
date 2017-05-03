@@ -16,7 +16,7 @@ from skimage.draw import circle
 from skimage.feature import corner_harris, peak_local_max
 from skimage import img_as_float
 import pyamg
-from cv2 import resize
+# from cv2 import resize
 
 # Parameters and defaults
 image_num = 1
@@ -452,17 +452,16 @@ class Panorama:
         imgs = []
         start_panorama = panorama
         offsets = []
+        print "Matching images together"
         for img_name in img_names[1:]:
+            print img_name
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)
             mapped = img_as_float(misc.imresize(mapped, 0.25))[15:-15]
             imgs.append(mapped)
-            print img_name
             if align_method == "convolve":
-                print "Convolving now: "+time.ctime()  # TODO: Remove after tested
                 h, shift, panorama = self.convolve(panorama, mapped, method="pyramid")
                 offsets.append((h, shift))
-                print "Done convolving: "+time.ctime()  # TODO: Remove after tested
             elif align_method == "features":
                 h, shift, correspondences = feature_detector.getAutoCorrespondences(panorama, mapped)
                 panorama = compose(mapped, panorama, shift, h)
@@ -476,6 +475,8 @@ class Panorama:
                 raise ValueError("Align method not recognized.")
         #Blend
         panorama = start_panorama
+        offsets = np.array(offsets)
+        cropIndex = feature_detector.cropPanoramaToWrap(imgs[np.argmin([0] + offsets[:,1])], imgs[np.argmax(offsets[:,1])], np.max(offsets[:,1]))
         print "Blending"
         for img, offset in zip(imgs, offsets):
             if blend_method == "poisson":
@@ -489,7 +490,21 @@ class Panorama:
             end_one = start_one + img.shape[0]
             end_two = start_two + panorama.shape[0]
             panorama = panorama[max(start_one, start_two):min(end_one, end_two)]
-        #panorama = feature_detector.cropPanoramaToWrap(panorama)
+        publishImage(panorama)
+        panorama = panorama[:,:cropIndex]
+        
+        # Blending ends of the panorama
+        publishImage(panorama)
+        
+        left_end = panorama[:,:200]
+        right_end = panorama[:,-200:]
+        if blend_method == "poisson":
+            ends = self.poisson_pyramid(right_end, left_end, 0, right_end.shape[1])
+        elif blend_method == "pyramid":
+            ends = self.pyramid_blend(right_end, left_end, 0, right_end.shape[1], levels=100)
+        panorama[:,:200] = left_end = ends[:,:200]
+        panorama[:,-200:] = right_end = ends[:,-200:]
+
         publishImage(panorama)
         return panorama
 
@@ -499,7 +514,7 @@ class Panorama:
         # self.runAlgorithm("vlsb", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features")
-        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "poisson")
+        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "pyramid")
         
         # print "\nRunning Spherical Panorama Algorithm:"
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
@@ -755,7 +770,7 @@ class FeatureDetection:
         best = []
         best_offset_x, best_offset_y = 0, 0
         inds = np.array(range(corners1.shape[1]))
-        for _ in range(100000):
+        for _ in range(1000000):
             # choose 4 random pairs (corners are indices!)
                 # Favors right-most features more
             sorted_indices = np.argsort(corners1[0])[::-1]
@@ -781,9 +796,9 @@ class FeatureDetection:
             if len(rr) == corners1.shape[1]:
                 break
         
-        if len(best) <= 2 and repeat > 0:
+        if len(best) <= 4 and repeat > 0:
             return self.estimateRANSAC(im1, im2, corners1, corners2, repeat - 1)
-        elif len(best) <= 2:
+        elif len(best) <= 4:
             if corners1.shape[1] > 2 and corners2.shape[1] > 2:
                 offset_x, offset_y = self.computeMinOffset(corners1.T, corners2.T)
                 offset_x, offset_y = np.round(offset_x).astype(int), np.round(offset_y).astype(int)
@@ -876,11 +891,9 @@ class FeatureDetection:
             panorama[:im2.shape[0], :im2.shape[1]] = im2
         return offset_x, offset_y, panorama
 
-    def cropPanoramaToWrap(self, panorama):
-        dim_x, dim_y = panorama.shape[:2]
-        offset_x, offset_y, _ = self.getFeaturesAndCombine(panorama[:,dim_y-200:], panorama[:,:200])
-        panorama2 = panorama[:,:offset_y + dim_y - 200]
-        return panorama2
+    def cropPanoramaToWrap(self, img1, img2, offset2):
+        _, offset_y, _ = self.getAutoCorrespondences(img2, img1)
+        return offset2 + offset_y
         # publishImage(panorama2)
         # panorama3 = np.copy(panorama2)
         # halfway = int(panorama2.shape[1]/2)

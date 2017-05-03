@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sys, os
 from scipy import misc
-import IPython
 
 
 class PanoramaViewer:
