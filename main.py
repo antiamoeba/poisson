@@ -15,8 +15,8 @@ from scipy.linalg import cho_solve, cho_factor, cholesky
 from skimage.draw import circle
 from skimage.feature import corner_harris, peak_local_max
 from skimage import img_as_float
+from skimage.transform import resize
 import pyamg
-from cv2 import resize
 
 # Parameters and defaults
 image_num = 1
@@ -423,7 +423,7 @@ class Panorama:
                 mask_j = mask_pyramid[j]
                 mask_j[mask_j >= 0.5] = 1
                 mask_j[mask_j < 0.5] = 0
-                prev_level = resize(prev_level, (mask_j.shape[1], mask_j.shape[0]))
+                prev_level = resize(prev_level, (mask_j.shape[0], mask_j.shape[1]))
                 old_total, h_n, shift_n = mask_compose(prev_level, dest_pyramid[j], mask_j, shift_offset, h_offset, start=True)
                 #erode mask
                 slices = []
@@ -515,8 +515,8 @@ class Panorama:
         # self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features")
         #self.runAlgorithm("distinct", 6600.838, self.cylindricalMappingIndices, "convolve", "poisson")
-        self.runAlgorithm("vlsb", 1167, self.coneMappingIndices, "features", "poisson")
-        
+        #self.runAlgorithm("vlsb", 1167, self.coneMappingIndices, "features", "poisson")
+        self.runAlgorithm("vlsb", 1167, self.coneMappingIndices, "features", "pyramid")
         # print "\nRunning Spherical Panorama Algorithm:"
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
         return
@@ -539,13 +539,12 @@ class PoissonSolver:
         return x
 
     def seamless_gradient(self, src, dst, start, end, point_tl):
-        start_val = 0
-        if start[0] >= 0 and start[0] < src.shape[0] and start[1] >= 0 and start[1] < src.shape[1]:
+        if start[0] >= 0 and start[0] < src.shape[0] and start[1] >= 0 and start[1] < src.shape[1] and end[0] >= 0 and end[0] < src.shape[0] and end[1] >= 0 and end[1] < src.shape[1]:
             start_val = src[start]
-        end_val = start_val
-        if end[0] >= 0 and end[0] < src.shape[0] and end[1] >= 0 and end[1] < src.shape[1]:
             end_val = src[end]
-        return start_val - end_val
+            return start_val - end_val
+        else:
+            return 0
     def mixed_gradient(self, src, dst, start, end, point_tl):
         src_gradient = self.seamless_gradient(src, dst, start, end, point_tl)
         nstart = (start[0] + point_tl[0], start[1] + point_tl[1])
