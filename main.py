@@ -15,8 +15,8 @@ from scipy.linalg import cho_solve, cho_factor, cholesky
 from skimage.draw import circle
 from skimage.feature import corner_harris, peak_local_max
 from skimage import img_as_float
+from skimage.transform import resize
 import pyamg
-# from cv2 import resize
 
 # Parameters and defaults
 image_num = 1
@@ -160,7 +160,7 @@ def calcImagePyramid(img, threshold=30, levels=None, resize="nearest"):
             iterations += 1
     return imgs
     
-
+cone_height = 4
 class Panorama:
     def __init__(self):
         print "\nCS 284B Final Project: Panoramas"
@@ -174,6 +174,12 @@ class Panorama:
     def sphericalMappingIndices(self, initial_indices, focal_length, center, scaling):
         new_x = focal_length * np.tan((initial_indices[1] - center[1]) / scaling)
         new_y = focal_length * np.tan((initial_indices[0] - center[0]) / scaling) / np.cos((initial_indices[1] - center[1]) / scaling)
+        return (new_y, new_x)
+    
+    def coneMappingIndices(self, initial_indices, focal_length, center, scaling):
+        new_x = focal_length * np.tan((initial_indices[1] - center[1]) / scaling)
+        w = np.sqrt(focal_length**2 + new_x**2)
+        new_y = cone_height * w * (initial_indices[0] - center[0]) / (cone_height * scaling - (initial_indices[0] - center[0]))
         return (new_y, new_x)
 
     def warpImage(self, image, focal_length, mapping, scaling=None):
@@ -391,12 +397,12 @@ class Panorama:
         final_img[final_img < 0] = 0
         return final_img
         
-    def poisson_pyramid(self, src, dest, h, shift, max_levels=2):
+    def poisson_pyramid(self, src, dest, h, shift, max_levels=2, method="seamless"):
         mask = np.ones((src.shape[0], src.shape[1]))
-        for y in range(src.shape[0]):
-            for x in range(src.shape[1]):
-                if src[y, x, 0] == 0 and src[y, x, 1] == 0 and src[y, x, 2] == 0:
-                    mask[y, x] = 0
+        #for y in range(src.shape[0]):
+        #    for x in range(src.shape[1]):
+        #        if src[y, x, 0] == 0 and src[y, x, 1] == 0 and src[y, x, 2] == 0:
+        #            mask[y, x] = 0
         mask_pyramid = calcImagePyramid(mask, levels=max_levels)
         poisson = PoissonSolver()
         colors = []
@@ -405,7 +411,11 @@ class Panorama:
             dest_curr = dest[:,:,i]
             src_pyramid = calcImagePyramid(src_curr, levels=max_levels)
             dest_pyramid = calcImagePyramid(dest_curr, levels=max_levels)
-            prev_level = poisson.poisson(src_pyramid[0], dest_pyramid[0], mask_pyramid[0], (int(h/(2 ** (max_levels - 1))), int(shift/(2 ** (max_levels - 1)))), poisson.seamless_gradient, return_type="region")
+            prev_level = None
+            if method == "seamless":
+                prev_level = poisson.poisson(src_pyramid[0], dest_pyramid[0], mask_pyramid[0], (int(h/(2 ** (max_levels - 1))), int(shift/(2 ** (max_levels - 1)))), poisson.seamless_gradient, return_type="region")
+            elif method == "mixed":
+                prev_level = poisson.poisson(src_pyramid[0], dest_pyramid[0], mask_pyramid[0], (int(h/(2 ** (max_levels - 1))), int(shift/(2 ** (max_levels - 1)))), poisson.mixed_gradient, return_type="region")
             total_img = None
             for j in range(1, max_levels):
                 h_offset = int(h/(2**((max_levels - 1)-j)))
@@ -413,7 +423,7 @@ class Panorama:
                 mask_j = mask_pyramid[j]
                 mask_j[mask_j >= 0.5] = 1
                 mask_j[mask_j < 0.5] = 0
-                prev_level = resize(prev_level, (mask_j.shape[1], mask_j.shape[0]))
+                prev_level = resize(prev_level, (mask_j.shape[0], mask_j.shape[1]))
                 old_total, h_n, shift_n = mask_compose(prev_level, dest_pyramid[j], mask_j, shift_offset, h_offset, start=True)
                 #erode mask
                 slices = []
@@ -428,7 +438,11 @@ class Panorama:
                         flag = True
                 output_region = np.zeros(mask_j.shape)
                 for slice_mask in slices:
-                    slice_points = poisson.poisson(src_pyramid[j], old_total, slice_mask, (h_n, shift_n), poisson.seamless_gradient, return_type="region")
+                    slice_points = None
+                    if method == "seamless":
+                        slice_points = poisson.poisson(src_pyramid[j], old_total, slice_mask, (h_n, shift_n), poisson.seamless_gradient, return_type="region")
+                    elif method == "mixed":
+                        slice_points = poisson.poisson(src_pyramid[j], old_total, slice_mask, (h_n, shift_n), poisson.mixed_gradient, return_type="region")
                     output_region += slice_points
                 prev_level = output_region
                 total_img = mask_compose(output_region, dest_pyramid[j], mask_j, shift_offset, h_offset)
@@ -446,8 +460,8 @@ class Panorama:
         feature_detector = FeatureDetection()
         panorama = []
         image = readimage(img_names[0])
-        mapped = self.warpImage(image, focal_length, mapping)
-        mapped = img_as_float(misc.imresize(mapped, 0.25))[15:-15]
+        mapped = self.warpImage(image, focal_length, mapping)[80:-80]
+        mapped = img_as_float(misc.imresize(mapped, 0.25))
         panorama = mapped
         imgs = []
         start_panorama = panorama
@@ -456,12 +470,15 @@ class Panorama:
         for img_name in img_names[1:]:
             print img_name
             image = readimage(img_name)
-            mapped = self.warpImage(image, focal_length, mapping)
-            mapped = img_as_float(misc.imresize(mapped, 0.25))[15:-15]
+            mapped = self.warpImage(image, focal_length, mapping)[80:-80]
+            mapped = img_as_float(misc.imresize(mapped, 0.25))
             imgs.append(mapped)
             if align_method == "convolve":
-                h, shift, panorama = self.convolve(panorama, mapped, method="pyramid")
+                print "Convolving now: "+time.ctime()  # TODO: Remove after tested
+                h, shift, panorama = self.convolve(panorama, mapped, method="gradient")
                 offsets.append((h, shift))
+                print (h, shift)
+                print "Done convolving: "+time.ctime()  # TODO: Remove after tested
             elif align_method == "features":
                 h, shift, correspondences = feature_detector.getAutoCorrespondences(panorama, mapped)
                 panorama = compose(mapped, panorama, shift, h)
@@ -515,7 +532,8 @@ class Panorama:
         # self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features")
         self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "pyramid")
-        
+        # self.runAlgorithm("vlsb", 1167, self.coneMappingIndices, "features", "pyramid")
+
         # print "\nRunning Spherical Panorama Algorithm:"
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
         return
@@ -538,19 +556,23 @@ class PoissonSolver:
         return x
 
     def seamless_gradient(self, src, dst, start, end, point_tl):
-        start_val = 0
-        if start[0] >= 0 and start[0] < src.shape[0] and start[1] >= 0 and start[1] < src.shape[1]:
+        if start[0] >= 0 and start[0] < src.shape[0] and start[1] >= 0 and start[1] < src.shape[1] and end[0] >= 0 and end[0] < src.shape[0] and end[1] >= 0 and end[1] < src.shape[1]:
             start_val = src[start]
-        end_val = start_val
-        if end[0] >= 0 and end[0] < src.shape[0] and end[1] >= 0 and end[1] < src.shape[1]:
             end_val = src[end]
-        return start_val - end_val
+            return start_val - end_val
+        else:
+            return 0
     def mixed_gradient(self, src, dst, start, end, point_tl):
         src_gradient = self.seamless_gradient(src, dst, start, end, point_tl)
         nstart = (start[0] + point_tl[0], start[1] + point_tl[1])
         nend = (end[0] + point_tl[0], end[1] + point_tl[1])
-        dest_gradient = self.seamless_gradient(dst, src, nstart, nend, point_tl)
-        if np.abs(dest_gradient) > np.abs(src_gradient):
+        
+        dest_gradient = 0
+        if nstart[0] >= 0 and nstart[0] < dst.shape[0] and nstart[1] >= 0 and nstart[1] < dst.shape[1] and nend[0] >= 0 and nend[0] < dst.shape[0] and nend[1] >= 0 and nend[1] < dst.shape[1]:
+            end_val = dst[nend]
+            start_val = dst[nstart]
+            dest_gradient = start_val - end_val
+        if abs(dest_gradient) > abs(src_gradient):
             return dest_gradient
         else:
             return src_gradient
@@ -915,19 +937,21 @@ if __name__ == "__main__":
     ### Code to test Poisson(): ###
     #print "Poisson now: "+time.ctime()  # TODO: Remove after tested
     #dest = readimage("data/vlsb/IMG_1892.JPG")
-    #source = readimage("data/vlsb/IMG_1889.JPG")
+    #source = readimage("data/vlsb/IMG_1892.JPG")
     #panorama = Panorama()
-    #dest = panorama.warpImage(dest, 1167, panorama.cylindricalMappingIndices)
+    #dest = panorama.warpImage(dest, 1167, panorama.coneMappingIndices)
     #source = panorama.warpImage(source, 1167, panorama.cylindricalMappingIndices)
+    #displayImage(dest)
+    #displayImage(source)
     #dest = img_as_float(misc.imresize(dest, 0.25))
     #source = img_as_float(misc.imresize(source, 0.125))
-    ##mask = np.ones((source.shape[0], source.shape[1]))
+    #mask = np.ones((source.shape[0], source.shape[1]))
     #poisson = PoissonSolver()
     #for y in range(mask.shape[0]):
     #    for x in range(mask.shape[1]):
     #        if source[y, x, 0] == 0 and source[y, x, 1] == 0 and source[y, x, 2] == 0:
     #            mask[y, x] = 0
-    #output_img = poisson.poisson(source[:,:,0], dest[:,:,0], mask, (50, 10), poisson.seamless_gradient)
+    #output_img = poisson.poisson(source[:,:,0], dest[:,:,0], mask, (50, 150), poisson.mixed_gradient)
     #output_img = panorama.poisson_pyramid(source, dest, 50, 150)
     #displayImage(output_img)
     #print "Done poisson: "+time.ctime()  # TODO: Remove after tested
