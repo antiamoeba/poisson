@@ -163,7 +163,7 @@ def calcImagePyramid(img, threshold=30, levels=None, resize="nearest"):
             iterations += 1
     return imgs
     
-cone_height = 0.5
+cone_height = 0.25
 class Panorama:
     def __init__(self):
         print "\nCS 284B Final Project: Panoramas"
@@ -182,7 +182,7 @@ class Panorama:
     def coneMappingIndices(self, initial_indices, focal_length, center, scaling):
         new_x = focal_length * np.tan((initial_indices[1] - center[1]) / scaling)
         w = np.sqrt(focal_length**2 + new_x**2)
-        new_y = cone_height * w * (initial_indices[0] - center[0]) / (cone_height * scaling - (initial_indices[0] - center[0]))
+        new_y = cone_height * w * (initial_indices[0] - center[0]) / (cone_height * scaling - (initial_indices[0] - center[0])) * 2
         return (new_y, new_x)
 
     def warpImage(self, image, focal_length, mapping, scaling=None):
@@ -403,7 +403,7 @@ class Panorama:
         poisson = PoissonSolver()
         colors = []
         for i in range(3):
-            output = poisson.poisson_quad(src[:,:,i], dest[:,:,i], (h, shift))
+            output = poisson.poisson_quad_opt(src[:,:,i], dest[:,:,i], (h, shift))
             colors.append(output)
         output_image = np.zeros((colors[0].shape[0], colors[0].shape[1], 3))
         for i in range(3):
@@ -481,7 +481,7 @@ class Panorama:
         start_panorama = panorama
         offsets = []
         print "Matching images together"
-        for img_name in img_names[1:]:
+        for img_name in img_names[1:-1]:
             print img_name
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)[80:-80]
@@ -508,12 +508,14 @@ class Panorama:
             else:
                 raise ValueError("Align method not recognized.")
         #Blend
+        publishImage(panorama)
         panorama = start_panorama
         offsets = np.array(offsets)
         cropIndex = feature_detector.cropPanoramaToWrap(imgs[np.argmin([0] + offsets[:,1])], imgs[np.argmax(offsets[:,1])], np.max(offsets[:,1]))
         if blend_method != "poisson_quad":    
             print "Blending"
             for img, offset in zip(imgs, offsets):
+                
                 if blend_method == "poisson":
                     panorama = self.poisson_pyramid(img, panorama, offset[0], offset[1])
                 elif blend_method == "mixed":
@@ -527,8 +529,8 @@ class Panorama:
                 end_one = start_one + img.shape[0]
                 end_two = start_two + panorama.shape[0]
                 panorama = panorama[max(start_one, start_two):min(end_one, end_two)]
+                publishImage(panorama)
             print "Done blending"
-            publishImage(panorama)
         else:
             publishImage(panorama)
         if wrap == True:
@@ -557,10 +559,10 @@ class Panorama:
         # self.runAlgorithm("synthetic", 330, self.cylindricalMappingIndices)
         # self.runAlgorithm("vlsb", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
-        # self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features", "pyramid")
+        self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features", "pyramid")
         # self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "poisson")
         #self.runAlgorithm("distinct", 1167, self.coneMappingIndices, "convolve", "mixed", wrap=False)
-        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "poisson_quad")
+        #self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "poisson_quad")
 
         # print "\nRunning Spherical Panorama Algorithm:"
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
@@ -1148,17 +1150,19 @@ if __name__ == "__main__":
     output_dir = 'output'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    #Panorama().runMain()
-    #print ""
+    Panorama().runMain()
+    print ""
     ### Code to test Poisson(): ###
-    print "Poisson now: "+time.ctime()  # TODO: Remove after tested
-    dest = readimage("data/vlsb/IMG_1881.JPG")
-    source = readimage("data/vlsb/IMG_1879.JPG")
-    panorama = Panorama()
-    dest = panorama.warpImage(dest, 1167, panorama.cylindricalMappingIndices)[80:-80]
-    source = panorama.warpImage(source, 1167, panorama.cylindricalMappingIndices)[80:-80]
-    dest = img_as_float(misc.imresize(dest, 0.125))
-    source = img_as_float(misc.imresize(source, 0.125))
+    #print "Poisson now: "+time.ctime()  # TODO: Remove after tested
+    ##dest = readimage("data/vlsb/IMG_1881.JPG")
+    #source = readimage("data/vlsb/IMG_1881.JPG")
+    #panorama = Panorama()
+    #dest = panorama.warpImage(dest, 1167, panorama.cylindricalMappingIndices)
+    #source = panorama.warpImage(source, 1167, panorama.coneMappingIndices)
+    #dest = img_as_float(misc.imresize(dest, 0.25))
+    # source = img_as_float(misc.imresize(source, 0.25))
+    # displayImage(source)
+    # displayImage(dest)
     #mask = np.ones((source.shape[0], source.shape[1]))
     #poisson = PoissonSolver()
     #for y in range(mask.shape[0]):
@@ -1167,19 +1171,19 @@ if __name__ == "__main__":
     #            mask[y, x] = 0
     #output_img = poisson.poisson(source[:,:,0], dest[:,:,0], mask, (50, 150), poisson.mixed_gradient)
     #output_img = panorama.poisson_pyramid(source, dest, 50, 150)
-    poisson = PoissonSolver()
+    #poisson = PoissonSolver()
     #h, shift = Panorama().pyramid_convolve(source[:,:,0], dest[:,:,0])
     #print h
     #print shift
-    red = poisson.poisson_quad_opt(source[:,:,0], dest[:,:,0], (0, 50))
-    green = poisson.poisson_quad_opt(source[:,:,1], dest[:,:,1], (0, 50))
-    blue = poisson.poisson_quad_opt(source[:,:,2], dest[:,:,2], (0, 50))
-    output_img = np.zeros((red.shape[0], red.shape[1], 3))
-    output_img[:,:,0] = red
-    output_img[:,:,1] = green
-    output_img[:,:,2] = blue
-    displayImage(output_img)
-    print "Done poisson: "+time.ctime()  # TODO: Remove after tested
+    #red = poisson.poisson_quad_opt(source[:,:,0], dest[:,:,0], (0, 50))
+    #green = poisson.poisson_quad_opt(source[:,:,1], dest[:,:,1], (0, 50))
+    #blue = poisson.poisson_quad_opt(source[:,:,2], dest[:,:,2], (0, 50))
+    #output_img = np.zeros((red.shape[0], red.shape[1], 3))
+    #output_img[:,:,0] = red
+    ##output_img[:,:,1] = green
+    #output_img[:,:,2] = blue
+    #displayImage(output_img)
+    #print "Done poisson: "+time.ctime()  # TODO: Remove after tested
     ##C Code to test pyramid blending
     #source = readimage("data/o-brien.jpg")[:,:,0]
     #dest = readimage("data/fishingscene.jpeg")[:,:,0]
