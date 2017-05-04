@@ -47,4 +47,4 @@ class PanoramaViewer:
 
 if __name__ == "__main__":
 	print ""
-	PanoramaViewer("output/image3.png")
+	PanoramaViewer("output/woods-poisson.png")

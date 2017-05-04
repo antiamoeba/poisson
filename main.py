@@ -385,7 +385,15 @@ class Panorama:
             half_y = int((overlap_br[0] - overlap_tl[0])/2)
             half_x = int((overlap_br[1] - overlap_tl[1])/2)
             mask = np.ones(src.shape)
-            mask[:,:overlap_tl[1] + half_x] = 0.0
+            if shift < 0:
+                mask[:,overlap_tl[1] + half_x : overlap_br[1] - half_x] = 0.0
+            elif shift + src.shape[1] < dest.shape[1]:
+                quarter_y = int((overlap_br[0] - overlap_tl[0])/4)
+                quarter_x = int((overlap_br[1] - overlap_tl[1])/4)
+                mask[:,:overlap_tl[1] + quarter_x] = 0
+                mask[:,overlap_br[1] - quarter_x:overlap_br[1]] = 0
+            else:
+                mask[:,:overlap_tl[1] + half_x] = 0.0
             # mask[:,overlap_tl[1] + half_x:overlap_br[1]] = 0.85
         mask_pyramid = self.calcGuassianPyramid(mask, max_levels=levels)
         
@@ -481,7 +489,7 @@ class Panorama:
         start_panorama = panorama
         offsets = []
         print "Matching images together"
-        for img_name in img_names[1:-1]:
+        for img_name in img_names[1:]:
             print img_name
             image = readimage(img_name)
             mapped = self.warpImage(image, focal_length, mapping)[80:-80]
