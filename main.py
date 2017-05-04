@@ -11,12 +11,15 @@ from scipy.ndimage.morphology import binary_erosion
 from scipy.signal import fftconvolve
 from scipy.sparse.linalg import cg
 from scipy import sparse
+import scipy.linalg
 from scipy.linalg import cho_solve, cho_factor, cholesky
 from skimage.draw import circle
 from skimage.feature import corner_harris, peak_local_max
 from skimage import img_as_float
 from skimage.transform import resize
 import pyamg
+
+from quadtree import QuadTree
 
 # Parameters and defaults
 image_num = 1
@@ -396,7 +399,17 @@ class Panorama:
         final_img[final_img > 1] = 1
         final_img[final_img < 0] = 0
         return final_img
-        
+    def poisson_quadtree(self, src, dest, h, shift):
+        poisson = PoissonSolver()
+        colors = []
+        for i in range(3):
+            output = poisson.poisson_quad(src[:,:,i], dest[:,:,i], (h, shift))
+            colors.append(output)
+        output_image = np.zeros((colors[0].shape[0], colors[0].shape[1], 3))
+        for i in range(3):
+            output_image[:,:,i] = colors[i]
+        #displayImage(output_image)
+        return output_image
     def poisson_pyramid(self, src, dest, h, shift, max_levels=2, method="seamless"):
         mask = np.ones((src.shape[0], src.shape[1]))
         #for y in range(src.shape[0]):
@@ -482,12 +495,15 @@ class Panorama:
                 print "Done convolving: "+time.ctime()  # TODO: Remove after tested
             elif align_method == "features":
                 h, shift, correspondences = feature_detector.getAutoCorrespondences(panorama, mapped)
-                panorama = compose(mapped, panorama, shift, h)
-                start_one = max(0, h)
-                start_two = max(0, -h)
-                end_one = start_one + mapped.shape[0]
-                end_two = start_two + panorama.shape[0]
-                panorama = panorama[max(start_one, start_two):min(end_one, end_two)]
+                if blend_method=="poisson_quad":
+                    panorama = self.poisson_quadtree(mapped, panorama, h, shift)
+                else:
+                    panorama = compose(mapped, panorama, shift, h)
+                    start_one = max(0, h)
+                    start_two = max(0, -h)
+                    end_one = start_one + mapped.shape[0]
+                    end_two = start_two + panorama.shape[0]
+                    panorama = panorama[max(start_one, start_two):min(end_one, end_two)]
                 offsets.append((h, shift))
             else:
                 raise ValueError("Align method not recognized.")
@@ -495,23 +511,26 @@ class Panorama:
         panorama = start_panorama
         offsets = np.array(offsets)
         cropIndex = feature_detector.cropPanoramaToWrap(imgs[np.argmin([0] + offsets[:,1])], imgs[np.argmax(offsets[:,1])], np.max(offsets[:,1]))
-        print "Blending"
-        for img, offset in zip(imgs, offsets):
-            if blend_method == "poisson":
-                panorama = self.poisson_pyramid(img, panorama, offset[0], offset[1])
-            elif blend_method == "mixed":
-                panorama = self.poisson_pyramid(img, panorama, offset[0], offset[1], method="mixed")
-            elif blend_method == "pyramid":
-                panorama = self.pyramid_blend(img, panorama, offset[0], offset[1], levels=100)
-            else:
-                raise ValueError("Blend method not recognized")
-            start_one = max(0, offset[0])
-            start_two = max(0, -offset[0])
-            end_one = start_one + img.shape[0]
-            end_two = start_two + panorama.shape[0]
-            panorama = panorama[max(start_one, start_two):min(end_one, end_two)]
-        print "Done blending"
-        publishImage(panorama)
+        if blend_method != "poisson_quad":    
+            print "Blending"
+            for img, offset in zip(imgs, offsets):
+                if blend_method == "poisson":
+                    panorama = self.poisson_pyramid(img, panorama, offset[0], offset[1])
+                elif blend_method == "mixed":
+                    panorama = self.poisson_pyramid(img, panorama, offset[0], offset[1], method="mixed")
+                elif blend_method == "pyramid":
+                    panorama = self.pyramid_blend(img, panorama, offset[0], offset[1], levels=100)
+                else:
+                    raise ValueError("Blend method not recognized")
+                start_one = max(0, offset[0])
+                start_two = max(0, -offset[0])
+                end_one = start_one + img.shape[0]
+                end_two = start_two + panorama.shape[0]
+                panorama = panorama[max(start_one, start_two):min(end_one, end_two)]
+            print "Done blending"
+            publishImage(panorama)
+        else:
+            publishImage(panorama)
         if wrap == True:
             panorama = panorama[:,:cropIndex]
             
@@ -538,9 +557,10 @@ class Panorama:
         # self.runAlgorithm("synthetic", 330, self.cylindricalMappingIndices)
         # self.runAlgorithm("vlsb", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
-        # self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features")
-        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "poisson")
+        # self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features", "pyramid")
+        # self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "poisson")
         #self.runAlgorithm("distinct", 1167, self.coneMappingIndices, "convolve", "mixed", wrap=False)
+        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "poisson_quad")
 
         # print "\nRunning Spherical Panorama Algorithm:"
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
@@ -584,6 +604,192 @@ class PoissonSolver:
             return dest_gradient
         else:
             return src_gradient
+    def poisson_quad_opt(self, osrc, odst, point_tl):
+        start_dst = max(0, point_tl[0])
+        end_dst = min(odst.shape[0], point_tl[0] + osrc.shape[0])
+        start_src = max(0, -point_tl[0])
+        end_src = min(-point_tl[0] + odst.shape[0], osrc.shape[0])
+        dst = odst[start_dst: end_dst]
+        src = osrc[start_src: end_src]
+
+        start_img, start_h, start_shift = compose(src, dst, point_tl[1], 0, start=True)
+        dest_h = max(0, -point_tl[0])
+        dest_shift = max(0, -point_tl[1])
+        src_laplacian = -laplace(src)
+        dst_laplacian = -laplace(dst)
+        num_vertices = start_img.shape[0] * start_img.shape[1]
+
+        b = np.zeros(num_vertices)
+        #calculate b
+        i = 0
+        for y in range(start_img.shape[0]):
+            for x in range(start_img.shape[1]):
+                src_y = y
+                src_x = x - start_shift
+
+                dest_y = y
+                dest_x = x - dest_shift
+
+                flag = True
+                src_l = 0
+                if src_y >= 0 and src_y < src.shape[0] and src_x >= 0 and src_x < src.shape[1]:
+                    src_l = src_laplacian[src_y, src_x]
+                else:
+                    flag = False
+                dst_l = 0
+                if dest_y >= 0 and dest_y < dst.shape[0] and dest_x >= 0 and dest_x < dst.shape[1]:
+                    dst_l = dst_laplacian[dest_y, dest_x]
+                else:
+                    flag = False
+                if flag == False:
+                    b[i] = src_l + dst_l
+                else:
+                    b[i] = (src_l + dst_l)/2
+                i += 1
+
+        x_0 = start_img.flatten()
+        diff = b - (-laplace(start_img).flatten())
+
+        print "Building quadtree"
+        diff_img = np.reshape(diff, start_img.shape)
+        qt = QuadTree(diff_img)
+                
+        A = np.zeros((num_vertices, len(qt.leaves)))
+        i = 0
+        for y in range(start_img.shape[0]):
+            for x in range(start_img.shape[1]):
+
+                #A
+                counter = 0
+                if y + 1 < start_img.shape[0]:
+                    index, box = qt.getIndex((y + 1, x))
+                    counter += 1
+                    A[i, index] += -1
+                if y - 1 >= 0:
+                    index, box = qt.getIndex((y - 1, x))
+                    counter += 1
+                    A[i, index] += -1
+                if x + 1 < start_img.shape[1]:
+                    index, box = qt.getIndex((y, x + 1))
+                    counter += 1
+                    A[i, index] += -1
+                if x - 1 >= 0:
+                    index, box = qt.getIndex((y, x - 1))
+                    counter += 1
+                    A[i, index] += -1
+                curr_index, box = qt.getIndex((y, x))
+                A[i,curr_index] += counter
+                i += 1
+        print "Multiplying"
+        #Do basis function stuff here, need to speed up these matrix multiplications
+        A_square = np.dot(A.T, A)
+        A_square = sparse.csr_matrix(A_square)
+        b_square = np.dot(A.T, diff)
+        S = np.zeros((num_vertices, len(qt.leaves)))
+        i = 0
+        for y in range(start_img.shape[0]):
+            for x in range(start_img.shape[1]):
+                index, box = qt.getIndex((y, x))
+                S[i, index] = 1
+                i += 1
+        print "Solving:"
+        points = np.dot(S, pyamg.solve(A_square, b_square, tol=1e-14))
+        points = points - np.mean(points)
+        img = np.reshape(points, start_img.shape)
+        output = img + start_img
+        print output
+        output[output > 1] = 1
+        output[output < 0] = 0
+        return output
+    def poisson_quad(self, osrc, odst, point_tl):
+        start_dst = max(0, point_tl[0])
+        end_dst = min(odst.shape[0], point_tl[0] + osrc.shape[0])
+        start_src = max(0, -point_tl[0])
+        end_src = min(-point_tl[0] + odst.shape[0], osrc.shape[0])
+        dst = odst[start_dst: end_dst]
+        src = osrc[start_src: end_src]
+
+        start_img, start_h, start_shift = compose(src, dst, point_tl[1], 0, start=True)
+        dest_h = max(0, -point_tl[0])
+        dest_shift = max(0, -point_tl[1])
+        src_laplacian = -laplace(src)
+        dst_laplacian = -laplace(dst)
+        num_vertices = start_img.shape[0] * start_img.shape[1]
+        A = np.zeros((num_vertices, num_vertices))
+        b = np.zeros(num_vertices)
+        i = 0
+        for y in range(start_img.shape[0]):
+            for x in range(start_img.shape[1]):
+                src_y = y
+                src_x = x - start_shift
+
+                dest_y = y
+                dest_x = x - dest_shift
+
+                flag = True
+                src_l = 0
+                if src_y >= 0 and src_y < src.shape[0] and src_x >= 0 and src_x < src.shape[1]:
+                    src_l = src_laplacian[src_y, src_x]
+                else:
+                    flag = False
+                dst_l = 0
+                if dest_y >= 0 and dest_y < dst.shape[0] and dest_x >= 0 and dest_x < dst.shape[1]:
+                    dst_l = dst_laplacian[dest_y, dest_x]
+                else:
+                    flag = False
+                if flag == False:
+                    b[i] = src_l + dst_l
+                else:
+                    b[i] = (src_l + dst_l)/2
+
+                #A
+                counter = 0
+                if y + 1 < start_img.shape[0]:
+                    i_bot = x + (y + 1) * start_img.shape[1]
+                    counter += 1
+                    A[i, i_bot] = -1
+                if y - 1 >= 0:
+                    i_top = x + (y - 1) * start_img.shape[1]
+                    counter += 1
+                    A[i, i_top] = -1
+                if x + 1 < start_img.shape[1]:
+                    i_right = x + 1 + y * start_img.shape[1]
+                    counter += 1
+                    A[i, i_right] = -1
+                if x - 1 >= 0:
+                    i_left = x - 1 + y * start_img.shape[1]
+                    counter += 1
+                    A[i, i_left] = -1
+                A[i,i] = counter
+                i += 1
+                
+        x_0 = start_img.flatten()
+        diff = b - (-laplace(start_img).flatten())
+
+        print "Building quadtree"
+        diff_img = np.reshape(diff, start_img.shape)
+        qt = QuadTree(diff_img)
+        S = np.zeros((num_vertices, len(qt.leaves)))
+        i = 0
+        for y in range(start_img.shape[0]):
+            for x in range(start_img.shape[1]):
+                index, box = qt.getIndex((y, x))
+                S[i, index] = 1
+                i += 1
+        print "Multiplying"
+        #Do basis function stuff here, need to speed up these matrix multiplications
+        A_square = np.dot(np.dot(S.T, np.dot(A.T, A)), S)
+        A_square = sparse.csr_matrix(A_square)
+        b_square = np.dot(S.T, np.dot(A.T, diff))
+        print "Solving:"
+        points = np.dot(S, pyamg.solve(A_square, b_square, tol=1e-14))
+        points = points - np.mean(points)
+        img = np.reshape(points, start_img.shape)
+        output = img + start_img
+        print output
+        output[output > 1] = 1
+        output[output < 0] = 0
+        return output
     def poisson(self, src, dst, mask, point_tl, guidance_func, return_type="composed"):
         if mask==None:
             mask = np.ones(src.shape)
@@ -942,19 +1148,17 @@ if __name__ == "__main__":
     output_dir = 'output'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    Panorama().runMain()
-    print ""
+    #Panorama().runMain()
+    #print ""
     ### Code to test Poisson(): ###
-    #print "Poisson now: "+time.ctime()  # TODO: Remove after tested
-    #dest = readimage("data/vlsb/IMG_1892.JPG")
-    #source = readimage("data/vlsb/IMG_1892.JPG")
-    #panorama = Panorama()
-    #dest = panorama.warpImage(dest, 1167, panorama.coneMappingIndices)
-    #source = panorama.warpImage(source, 1167, panorama.cylindricalMappingIndices)
-    #displayImage(dest)
-    #displayImage(source)
-    #dest = img_as_float(misc.imresize(dest, 0.25))
-    #source = img_as_float(misc.imresize(source, 0.125))
+    print "Poisson now: "+time.ctime()  # TODO: Remove after tested
+    dest = readimage("data/vlsb/IMG_1881.JPG")
+    source = readimage("data/vlsb/IMG_1879.JPG")
+    panorama = Panorama()
+    dest = panorama.warpImage(dest, 1167, panorama.cylindricalMappingIndices)[80:-80]
+    source = panorama.warpImage(source, 1167, panorama.cylindricalMappingIndices)[80:-80]
+    dest = img_as_float(misc.imresize(dest, 0.125))
+    source = img_as_float(misc.imresize(source, 0.125))
     #mask = np.ones((source.shape[0], source.shape[1]))
     #poisson = PoissonSolver()
     #for y in range(mask.shape[0]):
@@ -963,8 +1167,19 @@ if __name__ == "__main__":
     #            mask[y, x] = 0
     #output_img = poisson.poisson(source[:,:,0], dest[:,:,0], mask, (50, 150), poisson.mixed_gradient)
     #output_img = panorama.poisson_pyramid(source, dest, 50, 150)
-    #displayImage(output_img)
-    #print "Done poisson: "+time.ctime()  # TODO: Remove after tested
+    poisson = PoissonSolver()
+    #h, shift = Panorama().pyramid_convolve(source[:,:,0], dest[:,:,0])
+    #print h
+    #print shift
+    red = poisson.poisson_quad_opt(source[:,:,0], dest[:,:,0], (0, 50))
+    green = poisson.poisson_quad_opt(source[:,:,1], dest[:,:,1], (0, 50))
+    blue = poisson.poisson_quad_opt(source[:,:,2], dest[:,:,2], (0, 50))
+    output_img = np.zeros((red.shape[0], red.shape[1], 3))
+    output_img[:,:,0] = red
+    output_img[:,:,1] = green
+    output_img[:,:,2] = blue
+    displayImage(output_img)
+    print "Done poisson: "+time.ctime()  # TODO: Remove after tested
     ##C Code to test pyramid blending
     #source = readimage("data/o-brien.jpg")[:,:,0]
     #dest = readimage("data/fishingscene.jpeg")[:,:,0]
