@@ -163,7 +163,9 @@ def calcImagePyramid(img, threshold=30, levels=None, resize="nearest"):
             iterations += 1
     return imgs
     
-cone_height = 0.25
+#cone_height = 0.5
+#cone_radius = 2
+cone_theta = np.pi/3
 class Panorama:
     def __init__(self):
         print "\nCS 284B Final Project: Panoramas"
@@ -182,7 +184,12 @@ class Panorama:
     def coneMappingIndices(self, initial_indices, focal_length, center, scaling):
         new_x = focal_length * np.tan((initial_indices[1] - center[1]) / scaling)
         w = np.sqrt(focal_length**2 + new_x**2)
-        new_y = cone_height * w * (initial_indices[0] - center[0]) / (cone_height * scaling - (initial_indices[0] - center[0])) * 2
+        c = np.pi/2 - cone_theta
+        h = (initial_indices[0] - center[0]) / scaling
+        print h
+        new_y = w * h / (1 + h / np.tan(c))
+
+        #new_y = cone_height * w * (initial_indices[0] - center[0]) / (cone_radius * (cone_height * scaling * np.sqrt(cone_height**2 + 1) - (initial_indices[0] - center[0])))
         return (new_y, new_x)
 
     def warpImage(self, image, focal_length, mapping, scaling=None):
@@ -482,7 +489,8 @@ class Panorama:
         feature_detector = FeatureDetection()
         panorama = []
         image = readimage(img_names[0])
-        mapped = self.warpImage(image, focal_length, mapping)[80:-80]
+        mapped = self.warpImage(image, focal_length, mapping)
+        mapped = mapped[80:-80]
         mapped = img_as_float(misc.imresize(mapped, 0.25))
         panorama = mapped
         imgs = []
@@ -492,12 +500,18 @@ class Panorama:
         for img_name in img_names[1:]:
             print img_name
             image = readimage(img_name)
-            mapped = self.warpImage(image, focal_length, mapping)[80:-80]
+            mapped = self.warpImage(image, focal_length, mapping)
+            mapped = mapped[80:-80]
             mapped = img_as_float(misc.imresize(mapped, 0.25))
             imgs.append(mapped)
             if align_method == "convolve":
                 print "Convolving now: "+time.ctime()  # TODO: Remove after tested
                 h, shift, panorama = self.convolve(panorama, mapped, method="gradient")
+                start_one = max(0, h)
+                start_two = max(0, -h)
+                end_one = start_one + mapped.shape[0]
+                end_two = start_two + panorama.shape[0]
+                panorama = panorama[max(start_one, start_two):min(end_one, end_two)]
                 offsets.append((h, shift))
                 print (h, shift)
                 print "Done convolving: "+time.ctime()  # TODO: Remove after tested
@@ -505,6 +519,7 @@ class Panorama:
                 h, shift, correspondences = feature_detector.getAutoCorrespondences(panorama, mapped)
                 if blend_method=="poisson_quad":
                     panorama = self.poisson_quadtree(mapped, panorama, h, shift)
+                    displayImage(panorama)
                 else:
                     panorama = compose(mapped, panorama, shift, h)
                     start_one = max(0, h)
@@ -512,16 +527,16 @@ class Panorama:
                     end_one = start_one + mapped.shape[0]
                     end_two = start_two + panorama.shape[0]
                     panorama = panorama[max(start_one, start_two):min(end_one, end_two)]
-                offsets.append((h, shift))
+                    offsets.append((h, shift))
             else:
                 raise ValueError("Align method not recognized.")
         #Blend
         publishImage(panorama)
-        panorama = start_panorama
         offsets = np.array(offsets)
         cropIndex = feature_detector.cropPanoramaToWrap(imgs[np.argmin([0] + offsets[:,1])], imgs[np.argmax(offsets[:,1])], np.max(offsets[:,1]))
         if blend_method != "poisson_quad":    
             print "Blending"
+            panorama = start_panorama
             for img, offset in zip(imgs, offsets):
                 
                 if blend_method == "poisson":
@@ -567,10 +582,10 @@ class Panorama:
         # self.runAlgorithm("synthetic", 330, self.cylindricalMappingIndices)
         # self.runAlgorithm("vlsb", 6600.838, self.cylindricalMappingIndices)
         # self.runAlgorithm("woods", 6600.838, self.cylindricalMappingIndices)
-        self.runAlgorithm("vlsb", 1170, self.cylindricalMappingIndices, "features", "pyramid")
+        #self.runAlgorithm("cone", 600, self.coneMappingIndices, "convolve", "pyramid")
         # self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "poisson")
         #self.runAlgorithm("distinct", 1167, self.coneMappingIndices, "convolve", "mixed", wrap=False)
-        #self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "poisson_quad")
+        self.runAlgorithm("vlsb", 1167, self.cylindricalMappingIndices, "features", "poisson_quad")
 
         # print "\nRunning Spherical Panorama Algorithm:"
         # self.runAlgorithm("synthetic", 1320, self.sphericalMappingIndices)
@@ -692,9 +707,9 @@ class PoissonSolver:
                 i += 1
         print "Multiplying"
         #Do basis function stuff here, need to speed up these matrix multiplications
-        A_square = np.dot(A.T, A)
+        A_square = A
         A_square = sparse.csr_matrix(A_square)
-        b_square = np.dot(A.T, diff)
+        b_square = diff
         S = np.zeros((num_vertices, len(qt.leaves)))
         i = 0
         for y in range(start_img.shape[0]):
@@ -703,8 +718,10 @@ class PoissonSolver:
                 S[i, index] = 1
                 i += 1
         print "Solving:"
-        points = np.dot(S, pyamg.solve(A_square, b_square, tol=1e-14))
-        points = points - np.mean(points)
+        #points = pyamg.solve(A_square, b_square, tol=1e-14)
+        point_data = sparse.linalg.lsqr(A_square, b_square)
+        points = np.dot(S, point_data[0])
+        #points = points - np.mean(points)
         img = np.reshape(points, start_img.shape)
         output = img + start_img
         print output
@@ -1158,19 +1175,25 @@ if __name__ == "__main__":
     output_dir = 'output'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    Panorama().runMain()
-    print ""
+    #Panorama().runMain()
+    #print ""
     ### Code to test Poisson(): ###
-    #print "Poisson now: "+time.ctime()  # TODO: Remove after tested
-    ##dest = readimage("data/vlsb/IMG_1881.JPG")
-    #source = readimage("data/vlsb/IMG_1881.JPG")
-    #panorama = Panorama()
-    #dest = panorama.warpImage(dest, 1167, panorama.cylindricalMappingIndices)
-    #source = panorama.warpImage(source, 1167, panorama.coneMappingIndices)
-    #dest = img_as_float(misc.imresize(dest, 0.25))
-    # source = img_as_float(misc.imresize(source, 0.25))
+    print "Poisson now: "+time.ctime()  # TODO: Remove after tested
+    dest = readimage("data/vlsb/IMG_1889.JPG")
+    source = readimage("data/vlsb/IMG_1888.JPG")
+    panorama = Panorama()
+    dest = panorama.warpImage(dest, 1167, panorama.cylindricalMappingIndices)[80:-80]
+    source = panorama.warpImage(source, 1167, panorama.cylindricalMappingIndices)[80:-80]
+    dest = img_as_float(misc.imresize(dest, 0.25))
+    source = img_as_float(misc.imresize(source, 0.25))
+    #displayImage(dest)
+    #displayImage(source)
     # displayImage(source)
     # displayImage(dest)
+    # publishImage(source)
+    # publishImage(dest)
+    h, shift, correspondences = FeatureDetection().getAutoCorrespondences(dest, source)
+    # displayImage(compose(source, dest, shift, h))
     #mask = np.ones((source.shape[0], source.shape[1]))
     #poisson = PoissonSolver()
     #for y in range(mask.shape[0]):
@@ -1179,18 +1202,18 @@ if __name__ == "__main__":
     #            mask[y, x] = 0
     #output_img = poisson.poisson(source[:,:,0], dest[:,:,0], mask, (50, 150), poisson.mixed_gradient)
     #output_img = panorama.poisson_pyramid(source, dest, 50, 150)
-    #poisson = PoissonSolver()
+    poisson = PoissonSolver()
     #h, shift = Panorama().pyramid_convolve(source[:,:,0], dest[:,:,0])
     #print h
     #print shift
-    #red = poisson.poisson_quad_opt(source[:,:,0], dest[:,:,0], (0, 50))
-    #green = poisson.poisson_quad_opt(source[:,:,1], dest[:,:,1], (0, 50))
-    #blue = poisson.poisson_quad_opt(source[:,:,2], dest[:,:,2], (0, 50))
-    #output_img = np.zeros((red.shape[0], red.shape[1], 3))
-    #output_img[:,:,0] = red
-    ##output_img[:,:,1] = green
-    #output_img[:,:,2] = blue
-    #displayImage(output_img)
+    red = poisson.poisson_quad_opt(source[:,:,0], dest[:,:,0], (h, shift))
+    green = poisson.poisson_quad_opt(source[:,:,1], dest[:,:,1], (h, shift))
+    blue = poisson.poisson_quad_opt(source[:,:,2], dest[:,:,2], (h, shift))
+    output_img = np.zeros((red.shape[0], red.shape[1], 3))
+    output_img[:,:,0] = red
+    output_img[:,:,1] = green
+    output_img[:,:,2] = blue
+    displayImage(output_img)
     #print "Done poisson: "+time.ctime()  # TODO: Remove after tested
     ##C Code to test pyramid blending
     #source = readimage("data/o-brien.jpg")[:,:,0]
